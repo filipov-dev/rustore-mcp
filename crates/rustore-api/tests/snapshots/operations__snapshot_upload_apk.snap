@@ -1,0 +1,86 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"upload_apk\"))"
+---
+{
+  "access": "Write",
+  "body": "Multipart",
+  "description": "Метод позволяет загрузить файл с расширением `.apk` для публикации.\nAPK-файл для версии можно обновлять.\nОбратите внимание: установочный файл (APK или AAB), загруженный через RuStore API, не появится в веб-версии консоли разработчика сразу. Увидеть его в интерфейсе можно будет только после того, как черновик версии будет отправлен на модерацию.\nОграничения:\n• файл только с расширением `.apk`;\n• размер файла — не более 5 Гб;\n• загружаемая версия APK должна быть выше, чем текущая активная.\nМожно загрузить сразу два APK-файла:\n• с разными подписями разработчика — чтобы исключить ошибки обновления у пользователей. При скачивании на витрине RuStore отдаст файл с аналогичной подписью для каждого пользователя отдельно.\n• с поддержкой разных сервисов (Huawei Mobile Services и Google Mobile Services) — чтобы RuStore отдал на скачивание пользователю APK-файл, который включает сервисы адаптированные под его устройство.\n• при загрузке нескольких файлов обязательно укажите в каком из них Huawei Mobile Services и какой файл будет доступен всем пользователям по умолчанию. Загрузить можно не более 10 файлов.\nВ рамках обновления 20 июля 2023 года был добавлен обязательный параметр `IsMainApk` в метод ниже. Также рекомендуется обновить пайплайны.",
+  "docs_url": "https://www.rustore.ru/help/work-with-rustore-api/api-upload-publication-app/apk-file-upload/file-upload-apk",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "file": {
+        "description": "Файл в виде двоичного кода. Absolute path to a local file; the server reads it and uploads its content as multipart field `file`.",
+        "type": "string"
+      },
+      "isMainApk": {
+        "description": "Признак, который присваивается основному APK-файлу. Значения:\n• `true` — основной APK-файл;\n• `false` — по умолчанию.",
+        "type": "boolean"
+      },
+      "packageName": {
+        "description": "Имя пакета приложения",
+        "type": "string"
+      },
+      "servicesType": {
+        "description": "Тип сервиса, используемый в приложении. Возможные варианты:\n• `HMS` — для APK-файлов c Huawei Mobile Servises;\n• `Unknown` устанавливается по умолчанию, если поле не заполнено",
+        "type": "string"
+      },
+      "versionId": {
+        "description": "Версия приложения",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "packageName",
+      "versionId",
+      "isMainApk",
+      "file"
+    ],
+    "type": "object"
+  },
+  "method": "POST",
+  "operation_id": "upload_apk",
+  "params": [
+    {
+      "description": "Имя пакета приложения",
+      "location": "Path",
+      "name": "packageName",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "Версия приложения",
+      "location": "Path",
+      "name": "versionId",
+      "required": true,
+      "value_type": "Integer"
+    },
+    {
+      "description": "Тип сервиса, используемый в приложении. Возможные варианты:\n• `HMS` — для APK-файлов c Huawei Mobile Servises;\n• `Unknown` устанавливается по умолчанию, если поле не заполнено",
+      "location": "Query",
+      "name": "servicesType",
+      "required": false,
+      "value_type": "String"
+    },
+    {
+      "description": "Признак, который присваивается основному APK-файлу. Значения:\n• `true` — основной APK-файл;\n• `false` — по умолчанию.",
+      "location": "Query",
+      "name": "isMainApk",
+      "required": true,
+      "value_type": "Boolean"
+    },
+    {
+      "description": "Файл в виде двоичного кода. Absolute path to a local file; the server reads it and uploads its content as multipart field `file`.",
+      "location": "FormData",
+      "name": "file",
+      "required": true,
+      "value_type": "File"
+    }
+  ],
+  "path": "/public/v1/application/{packageName}/version/{versionId}/apk",
+  "response": "Json",
+  "summary": "Загрузка APK-файла",
+  "tool_name": "upload_apk",
+  "toolset": "releases"
+}

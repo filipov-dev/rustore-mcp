@@ -1,0 +1,52 @@
+[package]
+name = "rustore-api"
+description = "RuStore API: specification-driven operations, request executor, API key storage and access tokens"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64 = "0.22.1"
+# Только для `testing`: системный ГСЧ для ключей RSA в тестах.
+getrandom = { version = "0.4.3", features = ["sys_rng"], optional = true }
+# Secret Service в Linux — через zbus (чистый Rust, рантайм async-io, шифрование
+# сессии на Rust): бинарник не линкуется с libdbus и OpenSSL и собирается статически
+# (musl). async-io крутит D-Bus в своём потоке, поэтому синхронный API keyring
+# можно вызывать из кода внутри tokio-рантайма без взаимоблокировки.
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
+mime_guess = "2.0.5"
+percent-encoding = "2.3.2"
+# rustls без OpenSSL: бинарник собирается статически (musl).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "multipart", "stream", "query", "http2"] }
+# SHA512withRSA (подпись запроса токена RuStore) на чистом Rust: без OpenSSL и C, собирается
+# под musl и Windows MSVC. SHA-512 берётся реэкспортом `rsa::sha2`.
+rsa = { version = "0.10.0", features = ["pkcs1v15"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["fs", "io-util", "process", "sync", "time"] }
+tracing = "0.1.44"
+url = "2.5.8"
+zeroize = "1.9.1"
+
+[features]
+# Ключи RSA, сгенерированные для тестов других крейтов (`rustore_api::testing`).
+testing = ["dep:getrandom"]
+
+[build-dependencies]
+serde_json = "1.0.154"
+
+[dev-dependencies]
+# Системный ГСЧ для ключей RSA нестандартного размера в тестах.
+getrandom = { version = "0.4.3", features = ["sys_rng"] }
+# Ключи RSA для интеграционных тестов (`rustore_api::testing`).
+rustore-api = { path = ".", features = ["testing"] }
+insta = { version = "1.49.0", features = ["json"] }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6.5"
+
+[lints]
+workspace = true

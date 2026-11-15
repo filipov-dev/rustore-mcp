@@ -1,0 +1,72 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"list_reviews\"))"
+---
+{
+  "access": "Read",
+  "body": null,
+  "description": "Метод позволяет получить список всех последних отзывов для вашего приложения или получить отдельно взятый отзыв.\nОграничения:\n• по умолчанию на каждой странице отображается по 20 отзывов, вы можете отображать до 100 отзывов на странице, указав значение в параметре `size`;\n• совместно использовать параметры пагинации и фильтрации по 1 отзыву — нельзя (либо пагинация с указанием пары параметров `page` и `size` либо `id`);\n• если пользователь отредактировал отзыв, то признак редактирования отзыва (`edited`) принимает значение `true`;\n• по умолчанию сортировка производится по дате публикации отзыва (параметр `updatedAt`) от наиболее свежего отзыва.",
+  "docs_url": "https://www.rustore.ru/help/work-with-rustore-api/api-feedback-process/get-feedback",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "`id` конкретного отзыва. Задается при необходимости получить конкретный отзыв. Пример: `743103`.",
+        "type": "integer"
+      },
+      "packageName": {
+        "description": "Наименование пакета приложения. Максимальная длина – 50 символов. Пример: `com.myapp.example`.",
+        "type": "string"
+      },
+      "page": {
+        "description": "Номер страницы. Начинается с `0`. Пример: `0`.",
+        "type": "integer"
+      },
+      "size": {
+        "description": "Количество отзывов на странице. По умолчанию — `20`, максимально — `100`. Пример: `100`.",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "packageName"
+    ],
+    "type": "object"
+  },
+  "method": "GET",
+  "operation_id": "list_reviews",
+  "params": [
+    {
+      "description": "Наименование пакета приложения. Максимальная длина – 50 символов. Пример: `com.myapp.example`.",
+      "location": "Path",
+      "name": "packageName",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "`id` конкретного отзыва. Задается при необходимости получить конкретный отзыв. Пример: `743103`.",
+      "location": "Query",
+      "name": "id",
+      "required": false,
+      "value_type": "Integer"
+    },
+    {
+      "description": "Номер страницы. Начинается с `0`. Пример: `0`.",
+      "location": "Query",
+      "name": "page",
+      "required": false,
+      "value_type": "Integer"
+    },
+    {
+      "description": "Количество отзывов на странице. По умолчанию — `20`, максимально — `100`. Пример: `100`.",
+      "location": "Query",
+      "name": "size",
+      "required": false,
+      "value_type": "Integer"
+    }
+  ],
+  "path": "/public/v1/application/{packageName}/comment",
+  "response": "Json",
+  "summary": "Получение отзывов приложения",
+  "tool_name": "list_reviews",
+  "toolset": "reviews"
+}

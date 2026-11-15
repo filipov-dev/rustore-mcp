@@ -1,0 +1,72 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"reply_to_review\"))"
+---
+{
+  "access": "Destructive",
+  "body": "Json",
+  "description": "Метод позволяет оставить ответ на отзыв.",
+  "docs_url": "https://www.rustore.ru/help/work-with-rustore-api/api-feedback-process/feedback-answer",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "body": {
+        "description": "JSON request body.",
+        "properties": {
+          "message": {
+            "description": "Текст ответа на отзыв. В сообщении может быть от 1 до 500 символов. Пример: `Спасибо, за ваш отзыв. Он очень важен для нас.`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "commentId": {
+        "description": "`id` отзыва пользователя. Пример: `748223`.",
+        "type": "integer"
+      },
+      "packageName": {
+        "description": "Наименование пакета приложения. Максимальная длина – 50 символов. Пример: `com.myapp.example`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "packageName",
+      "commentId",
+      "body"
+    ],
+    "type": "object"
+  },
+  "method": "POST",
+  "operation_id": "reply_to_review",
+  "params": [
+    {
+      "description": "Наименование пакета приложения. Максимальная длина – 50 символов. Пример: `com.myapp.example`.",
+      "location": "Path",
+      "name": "packageName",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "`id` отзыва пользователя. Пример: `748223`.",
+      "location": "Query",
+      "name": "commentId",
+      "required": true,
+      "value_type": "Integer"
+    },
+    {
+      "description": "JSON request body.",
+      "location": "Body",
+      "name": "body",
+      "required": true,
+      "value_type": "Object"
+    }
+  ],
+  "path": "/public/v1/application/{packageName}/feedback",
+  "response": "Json",
+  "summary": "Оставить ответ на отзыв",
+  "tool_name": "reply_to_review",
+  "toolset": "reviews"
+}

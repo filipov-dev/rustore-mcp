@@ -1,0 +1,51 @@
+# Пример запуска rustore-mcp в HTTP-режиме (docs/http.md).
+#
+#   docker compose up --build -d
+#   curl http://127.0.0.1:8766/health
+#
+# Рядом с этим файлом нужны:
+#   tokens.toml              — SHA-256 токенов доступа клиентов (сами токены здесь не
+#                              хранятся);
+#   secrets/rustore-key.json — ключ RuStore API, JSON {"keyId", "privateKey"}; владелец —
+#                              uid 10001 (пользователь контейнера), права 0600 или 0400:
+#                                sudo chown 10001 secrets/rustore-key.json
+#                                chmod 600 secrets/rustore-key.json
+# Ключ в образ не попадает и наружу не отдаётся: клиенты MCP приходят только со
+# своими токенами доступа в заголовке Authorization.
+services:
+  rustore-mcp:
+    build: .
+    image: rustore-mcp:local
+    # Флаги serve: уровень доступа сервера (потолок для токенов), наборы инструментов по
+    # умолчанию и т. п. добавляйте сюда, например --allow-write.
+    # --allowed-host rustore-mcp — для других контейнеров этой сети, которые обращаются
+    # к серверу по имени сервиса (http://rustore-mcp:8766/mcp).
+    command:
+      - serve
+      - --http
+      - --listen
+      - 0.0.0.0:8766
+      - --allowed-host
+      - rustore-mcp
+      - --access-tokens
+      - /etc/rustore-mcp/tokens.toml
+      - --key-file
+      - /run/secrets/rustore-key
+    ports:
+      # Только loopback хоста. Для доступа с других машин поставьте перед сервером
+      # reverse proxy с TLS и добавьте его имя через --allowed-host.
+      - "127.0.0.1:8766:8766"
+    volumes:
+      - ./tokens.toml:/etc/rustore-mcp/tokens.toml:ro
+    secrets:
+      - rustore-key
+    environment:
+      RUST_LOG: warn
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+secrets:
+  rustore-key:
+    file: ./secrets/rustore-key.json

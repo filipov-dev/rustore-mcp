@@ -1,0 +1,63 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"get_subscription_sandbox\"))"
+---
+{
+  "access": "Read",
+  "body": null,
+  "description": "Метод работает только с подписками, оформленными через Pay SDK.\nМетод позволяет получить информацию о подписке пользователя по идентификатору покупки.\nДля тестовых подписок используйте отдельный метод:",
+  "docs_url": "https://www.rustore.ru/help/work-with-rustore-api/api-subscription-payment/api-subscription-validation",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "packageName": {
+        "description": "Наименование пакета приложения. Пример: `com.MashaAndTheBear.HairSalon`.",
+        "type": "string"
+      },
+      "purchaseId": {
+        "description": "Идентификатор покупки в формате UUID. Можно получить из результата покупки через SDK, из уведомления на сервер или запросом информации о покупке. Пример: `3aa0c7bd-964e-4562-b218-fe365adb4ae3`.",
+        "type": "string"
+      },
+      "subscriptionId": {
+        "description": "Код продукта-подписки.\nУказывается разработчиком при создании продукта в RuStore Консоли.\nКак создать подписку. Пример: `daily_sub`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "packageName",
+      "subscriptionId",
+      "purchaseId"
+    ],
+    "type": "object"
+  },
+  "method": "GET",
+  "operation_id": "get_subscription_sandbox",
+  "params": [
+    {
+      "description": "Наименование пакета приложения. Пример: `com.MashaAndTheBear.HairSalon`.",
+      "location": "Path",
+      "name": "packageName",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "Код продукта-подписки.\nУказывается разработчиком при создании продукта в RuStore Консоли.\nКак создать подписку. Пример: `daily_sub`.",
+      "location": "Path",
+      "name": "subscriptionId",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "Идентификатор покупки в формате UUID. Можно получить из результата покупки через SDK, из уведомления на сервер или запросом информации о покупке. Пример: `3aa0c7bd-964e-4562-b218-fe365adb4ae3`.",
+      "location": "Path",
+      "name": "purchaseId",
+      "required": true,
+      "value_type": "String"
+    }
+  ],
+  "path": "/public/sandbox/v4/subscription/{packageName}/{subscriptionId}/{purchaseId}",
+  "response": "Json",
+  "summary": "Получение данных подписки (V4) (тестовые платежи)",
+  "tool_name": "get_subscription_sandbox",
+  "toolset": "subscriptions"
+}

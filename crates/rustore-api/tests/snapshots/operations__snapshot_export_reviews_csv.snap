@@ -1,0 +1,63 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"export_reviews_csv\"))"
+---
+{
+  "access": "Read",
+  "body": null,
+  "description": "Метод позволяет получить все отзывы в формате .csv за определенный промежуток времени.\nОграничения:\n• минимальный период выбора отзывов — 1 день;\n• максимальный период выбора отзывов — 92 дня.",
+  "docs_url": "https://www.rustore.ru/help/work-with-rustore-api/api-feedback-process/get-csv-feedback",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "from": {
+        "description": "Дата, с которой необходимо выгружать отзывы, в формате `ГГГГ-ММ-ДД`. Пример: `2023-06-01`.",
+        "type": "string"
+      },
+      "packageName": {
+        "description": "Наименование пакета приложения. Максимальная длина — 50 символов. Пример: `com.myapp.example`.",
+        "type": "string"
+      },
+      "to": {
+        "description": "Дата, до которой необходимо выгрузить отзывы включительно, в формате `ГГГГ-ММ-ДД`. Пример: `2023-06-05`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "packageName",
+      "from",
+      "to"
+    ],
+    "type": "object"
+  },
+  "method": "GET",
+  "operation_id": "export_reviews_csv",
+  "params": [
+    {
+      "description": "Наименование пакета приложения. Максимальная длина — 50 символов. Пример: `com.myapp.example`.",
+      "location": "Path",
+      "name": "packageName",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "Дата, с которой необходимо выгружать отзывы, в формате `ГГГГ-ММ-ДД`. Пример: `2023-06-01`.",
+      "location": "Query",
+      "name": "from",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "Дата, до которой необходимо выгрузить отзывы включительно, в формате `ГГГГ-ММ-ДД`. Пример: `2023-06-05`.",
+      "location": "Query",
+      "name": "to",
+      "required": true,
+      "value_type": "String"
+    }
+  ],
+  "path": "/public/v1/application/{packageName}/comment/export",
+  "response": "Binary",
+  "summary": "Получение отзывов в формате CSV",
+  "tool_name": "export_reviews_csv",
+  "toolset": "reviews"
+}

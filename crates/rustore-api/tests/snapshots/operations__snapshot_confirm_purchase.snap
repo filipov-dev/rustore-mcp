@@ -1,0 +1,51 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"confirm_purchase\"))"
+---
+{
+  "access": "Destructive",
+  "body": null,
+  "description": "Метод позволяет подтвердить покупку (списать ранее зарезервированные средства с карты пользователя) по идентификатору покупки и приложения. Применяется только для двухстадийной покупки в статусе `PAID`.\nДля реальных покупок:",
+  "docs_url": "https://www.rustore.ru/help/work-with-rustore-api/api-subscription-payment/confirm-purchase",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "appId": {
+        "description": "Идентификатор приложения из RuStore консоли.\n1. Перейдите на вкладку Приложения и выберите нужное приложение.\n2. Скопируйте идентификатор из URL-адреса страницы приложения — это набор цифр между `apps/` и `/versions`. Пример: `1704024`.",
+        "type": "integer"
+      },
+      "purchaseId": {
+        "description": "Идентификатор покупки в формате UUID. Можно получить из результата покупки через SDK, из уведомления на сервер или запросом информации о покупке. Пример: `3aa0c7bd-964e-4562-b218-fe365adb4ae3`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "appId",
+      "purchaseId"
+    ],
+    "type": "object"
+  },
+  "method": "PUT",
+  "operation_id": "confirm_purchase",
+  "params": [
+    {
+      "description": "Идентификатор приложения из RuStore консоли.\n1. Перейдите на вкладку Приложения и выберите нужное приложение.\n2. Скопируйте идентификатор из URL-адреса страницы приложения — это набор цифр между `apps/` и `/versions`. Пример: `1704024`.",
+      "location": "Path",
+      "name": "appId",
+      "required": true,
+      "value_type": "Integer"
+    },
+    {
+      "description": "Идентификатор покупки в формате UUID. Можно получить из результата покупки через SDK, из уведомления на сервер или запросом информации о покупке. Пример: `3aa0c7bd-964e-4562-b218-fe365adb4ae3`.",
+      "location": "Path",
+      "name": "purchaseId",
+      "required": true,
+      "value_type": "String"
+    }
+  ],
+  "path": "/public/applications/{appId}/purchases/{purchaseId}:confirm",
+  "response": "Json",
+  "summary": "Подтверждение покупки",
+  "tool_name": "confirm_purchase",
+  "toolset": "purchases"
+}

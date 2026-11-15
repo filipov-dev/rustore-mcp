@@ -1,0 +1,51 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"delete_draft_version\"))"
+---
+{
+  "access": "Write",
+  "body": null,
+  "description": "Метод для удаления созданных ранее черновиков.\nУдалению подлежат только те версии, которые еще не были опубликованы.",
+  "docs_url": "https://www.rustore.ru/help/work-with-rustore-api/api-upload-publication-app/delete-draft",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "packageName": {
+        "description": "Имя пакета приложения.",
+        "type": "string"
+      },
+      "versionId": {
+        "description": "Версия приложения.",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "packageName",
+      "versionId"
+    ],
+    "type": "object"
+  },
+  "method": "DELETE",
+  "operation_id": "delete_draft_version",
+  "params": [
+    {
+      "description": "Имя пакета приложения.",
+      "location": "Path",
+      "name": "packageName",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "Версия приложения.",
+      "location": "Path",
+      "name": "versionId",
+      "required": true,
+      "value_type": "Integer"
+    }
+  ],
+  "path": "/public/v1/application/{packageName}/version/{versionId}",
+  "response": "Json",
+  "summary": "Удаление черновика",
+  "tool_name": "delete_draft_version",
+  "toolset": "releases"
+}

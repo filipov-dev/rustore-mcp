@@ -1,0 +1,197 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"create_draft_version\"))"
+---
+{
+  "access": "Write",
+  "body": "Json",
+  "description": "Метод позволяет создать черновик версии и заполнить его основной информацией.\nОграничения:\n• для одного приложения можно создать только один черновик. Попытка создания нескольких черновиков вызовет ошибку;\n• черновик, созданный через RuStore API, отображается в веб-версии консоли разработчика сразу после создания;\n• установочный файл (APK или AAB), загруженный через RuStore API, становится виден в веб-версии консоли только после отправки черновика на модерацию.\n• создание черновика возможно только при наличии активной версии приложения;\n• отсутствующие данные в полях черновика будут взяты из активной версии приложения;\n• черновик должен соответствовать типу приложения — бесплатное или платное. В случае отправки платной версии для бесплатного приложения черновик будет обрабатываться как бесплатный;\n• при создании нового черновика через API предыдущий черновик автоматически удаляется (не отправляется в архив);\n• при создании первой версии приложения все обязательные поля должны быть заполнены аналогично требованиям RuStore Console;\n• для каждого типа версии приложения (`appType`) есть соответствующие категории версии. В случае несоответствия категории, при попытке загрузки приложения будет показана ошибка;\n• частичная публикация приложения возможна только при автоматическом (`INSTANTLY`) или ручном (`MANUAL`) типе публикации (параметр — `publishType`).",
+  "docs_url": "https://www.rustore.ru/help/work-with-rustore-api/api-upload-publication-app/create-draft-version",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "body": {
+        "description": "JSON request body.",
+        "properties": {
+          "ageLegal": {
+            "description": "Возрастная категория\nВозможные варианты:\n• `18+`;\n• `16+`;\n• `12+`;\n• `6+`;\n• `0+`. Пример: `6+`.",
+            "enum": [
+              "18+",
+              "16+",
+              "12+",
+              "6+",
+              "0+"
+            ],
+            "type": "string"
+          },
+          "appName": {
+            "description": "Наименование версии приложения.\nМаксимальная длина — 50 символов. Пример: `Мое приложение`.",
+            "type": "string"
+          },
+          "appType": {
+            "description": "Тип версии приложения\nВозможные значения:\n• `GAMES` — для игр;\n• `MAIN` — для неигровых приложений.\nПередаваемые категории должны быть уникальными в рамках одного запроса. Пример: `GAMES`.",
+            "enum": [
+              "GAMES",
+              "MAIN"
+            ],
+            "type": "string"
+          },
+          "backgroundVideo": {
+            "description": "Фоновое видео для карточки приложения. Объект с полями:\n• `orientation` — ориентация видео, `LANDSCAPE` или `PORTRAIT`;\n• `url` — ссылка на видео;",
+            "type": "object"
+          },
+          "categories": {
+            "description": "Категории версии, не больше двух, например `[\"health\", \"news\"]`.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2,
+            "type": "array"
+          },
+          "developerContacts": {
+            "description": "Контакты разработчика; нужен хотя бы один способ связи, если ни один не заполнен в консоли разработчика.",
+            "properties": {
+              "email": {
+                "description": "Email, например `test@mail.ru`.",
+                "type": "string"
+              },
+              "maxMessenger": {
+                "description": "Канал в MAX, `https://max.ru/...`.",
+                "type": "string"
+              },
+              "vkCommunity": {
+                "description": "Сообщество VK, `https://vk.com/...`.",
+                "type": "string"
+              },
+              "website": {
+                "description": "Сайт, например `https://www.rustore.ru/`.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "faq": {
+            "description": "Список часто задаваемых вопросов и ответов для карточки приложения.\nМаксимум 10 элементов;\n`question` ≤ 120 символов;\n`answer` ≤ 500 символов;",
+            "items": {},
+            "type": "array"
+          },
+          "fullDescription": {
+            "description": "Полное описание версии.\nМаксимальная длина — 4 000 символов. Пример: `fullDescription - Приложение для RuStore`.",
+            "type": "string"
+          },
+          "fullDescriptionTv": {
+            "description": "Полное описание версии для ТВ.\nМинимум — 1, максимум — 4000 символов. Пример: `fullDescriptionTv - Приложение для RuStore`.",
+            "type": "string"
+          },
+          "inAppPurchaseTypes": {
+            "description": "Типы встроенных покупок.\nВозможные значения:\n• `PRODUCTS` — разовые покупки;\n• `SUBSCRIPTIONS` — подписки. Пример: `[\"PRODUCTS\"]`.",
+            "items": {
+              "enum": [
+                "PRODUCTS",
+                "SUBSCRIPTIONS"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "moderInfo": {
+            "description": "Комментарий разработчика для модератора.\nМаксимальная длина — 180 символов. Пример: `moderInfo - Приложение для RuStore`.",
+            "type": "string"
+          },
+          "packageSdkDto": {
+            "description": "Объект с информацией об интегрированных SDK.\nПоля:\n• `adsSdks` — массив названий рекламных SDK;\n• `paymentSdks` — массив названий платёжных SDK.\nМаксимальное количество — 50 элементов в каждом массиве",
+            "type": "object"
+          },
+          "partialValue": {
+            "description": "Процент для частичной публикации приложения.\nМожет принимать значения:\n• `5`%;\n• `10`%;\n• `25`%;\n• `50`%;\n• `75`%\n• `100`%. Пример: `5`.",
+            "type": "integer"
+          },
+          "priceValue": {
+            "description": "Стоимость приложения в минимальных единицах валюты (в копейках), например: «87.99 руб.» = 8799.\nЗначение должно быть >0. Пример: `8799`.",
+            "type": "string"
+          },
+          "privacyDataTypes": {
+            "description": "Категории и типы данных, к которым приложение запрашивает доступ.\nМаксимальное количество — 50. Пример: `[\"location\", \"contacts\"]`.",
+            "items": {},
+            "type": "array"
+          },
+          "privacyExplanation": {
+            "description": "Пояснение, зачем приложению нужны чувствительные разрешения.\nМаксимальная длина — 4000 символов. Пример: `Приложению нужен доступ к геолокации для отображения ближайших точек`.",
+            "type": "string"
+          },
+          "publishDateTime": {
+            "description": "Дата и время для отложенной публикации.\nформат: `yyyy-MM-dd'T'HH:mm:ssXXX`.\nУказанная дата должна быть не раньше 24 часов и не позже 60 дней с планируемой даты отправки на модерацию. В дальнейшем дату отложенной публикации можно будет поменять.\nПримечание: если `publishType` указан `MANUAL` или `INSTANTLY`, данный параметр может быть любым и не будет учитываться\nОбязательность: Нет\n; Да, если `publishType` = `DELAYED`. Пример: `2022-07-08T13:24:41.8328711+03:00`.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "publishType": {
+            "description": "Тип публикации.\nМожет принимать значения:\n• `MANUAL` — ручная публикация;\n• `INSTANTLY` — автоматическая публикация, сразу после прохождения модерации;\n• `DELAYED` — отложенная публикация.\nПримечание: если параметр не указан, по умолчанию он принимается за `INSTANTLY`. Пример: `MANUAL`.",
+            "enum": [
+              "MANUAL",
+              "INSTANTLY",
+              "DELAYED"
+            ],
+            "type": "string"
+          },
+          "seoTagIds": {
+            "description": "ID поисковых тегов из списка. Выбирайте теги согласно указанному `appType`. Все теги должны быть либо только для `GAMES`, либо только для `MAIN`.\nМаксимальное количество — 5. Пример: `[100, 102]`.",
+            "items": {},
+            "type": "array"
+          },
+          "shortDescription": {
+            "description": "Краткое описание версии.\nМаксимальная длина — 80 символов. Пример: `Приложение для RuStore`.",
+            "type": "string"
+          },
+          "shortDescriptionTv": {
+            "description": "Краткое описание версии для ТВ.\nМинимум — 1, максимум — 80 символов. Пример: `Приложение для RuStore на ТВ`.",
+            "type": "string"
+          },
+          "video": {
+            "description": "Видео для карточки приложения. Объект с полями:\n• `orientation` — ориентация видео, `LANDSCAPE` или `PORTRAIT`;\n• `url` — ссылка на видео;",
+            "type": "object"
+          },
+          "whatsNew": {
+            "description": "Описание «Что нового».\nМаксимальная длина — 5000 символов. Пример: `whatsNew - Приложение для RuStore`.",
+            "type": "string"
+          },
+          "whatsNewTv": {
+            "description": "Описание «Что нового» для ТВ.\nМаксимальная длина — Минимум — 1, максимум — 5000 символов. Пример: `whatsNewTv - Приложение для RuStore`.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "packageName": {
+        "description": "Наименование пакета приложения. Пример: `com.myapp.example`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "packageName"
+    ],
+    "type": "object"
+  },
+  "method": "POST",
+  "operation_id": "create_draft_version",
+  "params": [
+    {
+      "description": "Наименование пакета приложения. Пример: `com.myapp.example`.",
+      "location": "Path",
+      "name": "packageName",
+      "required": true,
+      "value_type": "String"
+    },
+    {
+      "description": "JSON request body.",
+      "location": "Body",
+      "name": "body",
+      "required": false,
+      "value_type": "Object"
+    }
+  ],
+  "path": "/public/v1/application/{packageName}/version",
+  "response": "Json",
+  "summary": "Создание черновика версии",
+  "tool_name": "create_draft_version",
+  "toolset": "releases"
+}

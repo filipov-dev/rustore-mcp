@@ -1,0 +1,54 @@
+//! Бинарник `rustore-mcp`: CLI и транспорт MCP-сервера RuStore API.
+//!
+//! `main` только разбирает аргументы и вызывает модуль подкоманды из [`cli`].
+
+mod cli;
+mod clients;
+mod login;
+mod profiles;
+mod ui;
+mod verify;
+
+use clap::{Parser, Subcommand};
+
+/// MCP server and CLI for the RuStore API.
+#[derive(Debug, Parser)]
+#[command(name = "rustore-mcp", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the MCP server over stdio, or over HTTP with --http.
+    Serve(cli::serve::ServeArgs),
+    /// Manage the RuStore API keys of profiles in the system keychain.
+    #[command(subcommand)]
+    Auth(cli::auth::AuthCommand),
+    /// Register the server in an MCP client (Claude Code or Codex) for a profile.
+    ///
+    /// Stores the RuStore API key of the profile in the system keychain (or keeps a working
+    /// one), then adds `rustore-mcp serve --profile <profile>` to the client config after
+    /// confirmation. The key never goes to the client config.
+    Connect(cli::connect::ConnectArgs),
+    /// List and check custom tools defined in tools.toml.
+    #[command(subcommand)]
+    Tools(cli::tools::ToolsCommand),
+    /// Internal: run one `jq` filter for `serve` (JSON on stdin and stdout).
+    #[command(name = "jq-worker", hide = true)]
+    JqWorker,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Спецификация встроена в бинарник; ссылка на неё не даёт линковщику её выбросить.
+    let _ = rustore_mcp_core::rustore_api::OPENAPI_JSON.len();
+    match Cli::parse().command {
+        Command::Serve(args) => cli::serve::run(args).await,
+        Command::Auth(command) => cli::auth::run(command).await,
+        Command::Connect(args) => cli::connect::run(args).await,
+        Command::Tools(command) => cli::tools::run(command),
+        Command::JqWorker => cli::jq_worker::run(),
+    }
+}
