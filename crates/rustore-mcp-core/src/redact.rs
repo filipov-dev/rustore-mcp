@@ -19,6 +19,17 @@
 //!    PEM и в Base64 (DER, начинаются с `MII`), токены JWE и JWT, значения `Public-Token`,
 //!    `Bearer` и `Basic`, пароли в URL (`https://user:пароль@host`). Заменяется только сам
 //!    секрет, остальной текст остаётся.
+//! 3. **Параметры query в ссылках** ([`redact_url_query`]): значения параметров с именами
+//!    учётных данных (`token`, `access_token`, `signature`, `X-Amz-Signature`, `sig`, `key`,
+//!    `X-Goog-Credential` и т. п.) в адресах `scheme://host/...?...`. Ссылки на файлы
+//!    хранилища RuStore (`fileUrl`, `iconUrl`) сейчас без подписи, но подписанная ссылка — это
+//!    доступ к файлу, и агенту её значение не нужно. Имя параметра и остальная ссылка
+//!    остаются.
+//!
+//! Push-токены устройств (`token` сообщения push, `push_token` в ошибках подписки на топик,
+//! массивы `push_tokens`) — адреса живых людей для push-уведомлений: они скрываются по имени
+//! поля, в том числе строки внутри массива с таким именем. Сервисный токен push и токены
+//! устройств из запроса дополнительно вырезает исполнитель по точному значению.
 //!
 //! Токены покупок и подписок (`purchaseToken`, `subscriptionToken`) и номера счетов
 //! (`invoiceId`) — не секреты доступа: это идентификаторы платежей, по которым агент
@@ -52,6 +63,8 @@ pub const CREDENTIAL_KEYS: &[&str] = &[
     "passphrase",
     "secret",
     "token",
+    // Массивы токенов: `push_tokens` подписки на топик push.
+    "tokens",
     "jwe",
     "jwt",
     "private_key",
@@ -118,7 +131,8 @@ impl Redactions {
         if self.secret_values > 0 {
             parts.push(format!(
                 "{} value(s) that look like private keys, tokens or passwords (RSA private keys, \
-                 JWE or JWT tokens, Public-Token or Authorization values, passwords in URLs) \
+                 JWE or JWT tokens, Public-Token or Authorization values, passwords and \
+                 credential query parameters in URLs) \
                  were replaced with \"{REDACTED}\" inside the text.",
                 self.secret_values
             ));
@@ -193,6 +207,19 @@ fn walk(value: &mut Value, redactions: &mut Redactions) {
                 }
                 if let Value::String(text) = item {
                     redact_field(key, text, redactions);
+                    continue;
+                }
+                // Массив строк под именем учётных данных (`push_tokens`): скрывается каждая.
+                if let Value::Array(items) = item
+                    && is_credential_key(key)
+                    && items.iter().all(Value::is_string)
+                {
+                    for text in items.iter_mut().filter_map(|v| match v {
+                        Value::String(text) => Some(text),
+                        _ => None,
+                    }) {
+                        redact_field(key, text, redactions);
+                    }
                     continue;
                 }
                 walk(item, redactions);
@@ -356,6 +383,65 @@ fn redact_secret_values_in_place(text: &mut String) -> usize {
             *text = updated;
         }
     }
+    count + redact_url_query(text)
+}
+
+/// Имена параметров query, которые скрываются в ссылках сверх [`is_credential_key`]
+/// (после приведения имени к snake_case): подписи и ключи подписанных ссылок хранилищ.
+const URL_QUERY_KEYS: &[&str] = &["sig", "key", "auth", "credential"];
+
+/// Параметр query с учётными данными (правило 3).
+fn is_url_query_credential(name: &str) -> bool {
+    if is_visible_key(name) {
+        return false;
+    }
+    let normalized = normalize_key(name);
+    is_credential_key(name)
+        || URL_QUERY_KEYS.iter().any(|candidate| {
+            normalized == *candidate
+                || normalized
+                    .strip_suffix(candidate)
+                    .is_some_and(|rest| rest.ends_with('_'))
+        })
+}
+
+static URL_QUERY: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r#"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s?#"'<>]*\?([^\s#"'<>]*)"#).ok());
+
+/// Скрывает значения параметров query с учётными данными в ссылках (правило 3).
+/// Возвращает число замен.
+fn redact_url_query(text: &mut String) -> usize {
+    let Some(regex) = URL_QUERY.as_ref() else {
+        return 0;
+    };
+    if !text.contains("://") || !text.contains('?') {
+        return 0;
+    }
+    let mut count = 0;
+    let replaced = regex.replace_all(text, |caps: &Captures<'_>| {
+        let whole = caps.get(0).map_or("", |m| m.as_str());
+        let Some(query) = caps.get(1) else {
+            return whole.to_owned();
+        };
+        let offset = query.start() - caps.get(0).map_or(0, |m| m.start());
+        let params: Vec<String> = query
+            .as_str()
+            .split('&')
+            .map(|pair| match pair.split_once('=') {
+                Some((name, value))
+                    if !value.is_empty() && value != REDACTED && is_url_query_credential(name) =>
+                {
+                    count += 1;
+                    format!("{name}={REDACTED}")
+                }
+                _ => pair.to_owned(),
+            })
+            .collect();
+        format!("{}{}", &whole[..offset], params.join("&"))
+    });
+    if let std::borrow::Cow::Owned(updated) = replaced {
+        *text = updated;
+    }
     count
 }
 
@@ -512,6 +598,24 @@ mod tests {
 
     fn jwt() -> String {
         JWT_PARTS.join(".")
+    }
+
+    #[test]
+    fn push_device_tokens_are_hidden_by_field() {
+        let mut json = json!({
+            "message": "1 error(s)",
+            "errors": [{"push_token": "bk3RNwTe3H0:CI2k_HHwgIpoDKCIZvvD", "error": {"code": 1001, "status": "FORBIDDEN", "message": "s2s token invalid"}}],
+            "push_tokens": ["kHrfTow3AjqdgUeCJLwbIHd7c0", "9mbJVS0-2e0cCcIx7X5nxMIgp8"],
+            "tokenCount": 2
+        });
+        let redactions = redact_json("/topics/news/batch_subscribe", &mut json);
+        assert_eq!(json["errors"][0]["push_token"], REDACTED);
+        assert_eq!(json["push_tokens"], json!([REDACTED, REDACTED]));
+        // Обычный текст и числа остаются.
+        assert_eq!(json["errors"][0]["error"]["message"], "s2s token invalid");
+        assert_eq!(json["tokenCount"], 2);
+        assert!(redactions.credential_fields.contains("push_token"));
+        assert!(redactions.credential_fields.contains("push_tokens"));
     }
 
     #[test]
@@ -677,6 +781,42 @@ mod tests {
                 "{plain}"
             );
         }
+    }
+
+    #[test]
+    fn credential_query_parameters_in_urls() {
+        let (text, count) = redact_secret_values(
+            "file https://static.rustore.ru/a/0.png?token=abc123&w=100&X-Amz-Signature=f00d \
+             and https://static.rustore.ru/b.png?sig=1&key=2&X-Goog-Credential=3#top",
+        );
+        assert_eq!(count, 5, "{text}");
+        assert_eq!(
+            text,
+            "file https://static.rustore.ru/a/0.png?token=[redacted]&w=100&\
+             X-Amz-Signature=[redacted] and https://static.rustore.ru/b.png?sig=[redacted]&\
+             key=[redacted]&X-Goog-Credential=[redacted]#top"
+        );
+        // Обычные параметры, параметры постраничной выдачи и текст без ссылок не меняются.
+        for plain in [
+            "https://static.rustore.ru/a/0.png",
+            "https://static.rustore.ru/a/0.png?w=100&h=200",
+            "https://public-api-m.rustore.ru/x?pageToken=abc&continuationToken=def",
+            "token=abc without a link?",
+        ] {
+            assert_eq!(
+                redact_secret_values(plain),
+                (plain.to_owned(), 0),
+                "{plain}"
+            );
+        }
+        // В JSON-ответе — с пометкой.
+        let mut json = json!({"fileUrl": "https://static.rustore.ru/a.png?access_token=xyz"});
+        let found = redact_json(APP, &mut json);
+        assert_eq!(found.secret_values, 1);
+        assert_eq!(
+            json["fileUrl"],
+            "https://static.rustore.ru/a.png?access_token=[redacted]"
+        );
     }
 
     #[test]

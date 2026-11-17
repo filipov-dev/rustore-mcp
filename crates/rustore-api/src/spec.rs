@@ -17,6 +17,11 @@
 //! 4. Ответ разобрать по [`OperationDef::response`]: JSON или бинарное содержимое файла.
 //!
 //! Заголовок `Public-Token` (токен доступа) в параметры не входит: его добавляет исполнитель.
+//!
+//! Операции push-уведомлений ([`ApiService::Push`], [`ApiService::PushTopics`]) идут на другие
+//! хосты с другим секретом — сервисным токеном проекта push. Хост, идентификатор проекта и
+//! заголовок `Authorization` подставляет исполнитель по [`OperationDef::service`]; в
+//! аргументах инструмента их нет.
 
 /// HTTP-метод операции.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -36,6 +41,39 @@ impl HttpMethod {
             Self::Put => "PUT",
             Self::Patch => "PATCH",
             Self::Delete => "DELETE",
+        }
+    }
+}
+
+/// Сервис RuStore, к которому относится операция: свой хост и свой секрет.
+///
+/// Задаётся в спецификации полем `servers` операции (у операций Public API его нет). Хост,
+/// префикс пути с идентификатором проекта и заголовок авторизации выбирает исполнитель
+/// ([`crate::executor::ApiClient`]): сервисный токен push уходит только на хосты push, токен
+/// доступа Public API — только на `public-api-m.rustore.ru`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ApiService {
+    /// RuStore Public API (`public-api-m.rustore.ru`), токен доступа в `Public-Token`.
+    #[default]
+    PublicApi,
+    /// Отправка push-уведомления на устройство (`vkpns.rustore.ru`), сервисный токен проекта
+    /// в `Authorization: Bearer`.
+    Push,
+    /// Push-уведомления по топикам (`vkpns-topics.rustore.ru`), тот же сервисный токен.
+    PushTopics,
+}
+
+impl ApiService {
+    /// Операция идёт в Push API (по токену устройства или по топику).
+    pub fn is_push(self) -> bool {
+        matches!(self, Self::Push | Self::PushTopics)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PublicApi => "public-api",
+            Self::Push => "push",
+            Self::PushTopics => "push-topics",
         }
     }
 }
@@ -148,7 +186,10 @@ pub struct OperationDef {
     /// Страница справочника с описанием операции.
     pub docs_url: &'static str,
     pub method: HttpMethod,
-    /// Шаблон пути, например `/public/v1/application/{packageName}/comment`.
+    /// Сервис операции: хост и секрет запроса выбирает по нему исполнитель.
+    pub service: ApiService,
+    /// Шаблон пути, например `/public/v1/application/{packageName}/comment`. У операций
+    /// push — путь после префикса проекта (`/messages:send`, `/topics/{topic}/publish`).
     pub path: &'static str,
     pub access: AccessLevel,
     pub params: &'static [ParamDef],

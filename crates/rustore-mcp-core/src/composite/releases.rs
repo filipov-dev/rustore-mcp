@@ -10,6 +10,9 @@
 //! - `release_rollout` (удаление) — ручная публикация одобренной версии, рост процента
 //!   частичной публикации или текущее состояние.
 //!
+//! - `wait_for_moderation` (чтение, [`moderation`]) — ожидание итога модерации версии с
+//!   интервалом опроса, пределом времени и сообщениями о ходе.
+//!
 //! У `release_submit` и `release_rollout` есть `dry_run`: чтения выполняются, изменяющие
 //! вызовы только перечисляются. Сами инструменты регистрируются на уровне удаления, так что
 //! и пробный запуск доступен только серверу с `--allow-destructive`.
@@ -112,6 +115,7 @@ pub const TOOLS: &[CompositeTool] = &[
         uses_local_files: false,
         run: release_rollout,
     },
+    moderation::WAIT_FOR_MODERATION,
 ];
 
 /// Поля версии в ответе `release_summary` (из `list_versions`, `statusComment` — из
@@ -1513,6 +1517,8 @@ fn next_steps(status: &str, publish_type: Option<&str>, current: Option<u64>) ->
         ),
     }
 }
+
+mod moderation;
 
 #[cfg(test)]
 mod tests;

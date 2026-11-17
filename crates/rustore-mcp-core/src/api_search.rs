@@ -88,6 +88,8 @@ const RU_EN: &[(&str, &[&str])] = &[
     ("публикац", &["publish"]),
     ("опубликова", &["publish"]),
     ("раскатк", &["rollout", "publish"]),
+    ("ожида", &["wait"]),
+    ("дожд", &["wait"]),
     ("архив", &["archive"]),
     ("доступ", &["access", "developer"]),
     ("рол", &["role", "access"]),
@@ -108,6 +110,10 @@ const RU_EN: &[(&str, &[&str])] = &[
     ("сводк", &["summary"]),
     ("обзор", &["summary"]),
     ("поиск", &["search", "list"]),
+    ("уведомлен", &["push", "notification"]),
+    ("пуш", &["push"]),
+    ("топик", &["topic"]),
+    ("рассылк", &["push", "topic"]),
 ];
 
 /// Описание инструмента.
@@ -772,6 +778,22 @@ mod tests {
         // Короткие слова не обрезаются.
         assert_eq!(russian_stem("поле"), "поле");
         assert_eq!(russian_stem("цель"), "цель");
+    }
+
+    #[test]
+    fn push_in_russian_finds_push_operations() {
+        for query in [
+            "push-уведомление",
+            "уведомления",
+            "пуш",
+            "рассылка по топику",
+        ] {
+            let hits = ranked(query);
+            assert!(!hits.is_empty(), "{query}");
+            assert_eq!(find(hits[0]).unwrap().toolset, "push", "{query}: {hits:?}");
+        }
+        assert!(ranked("push").contains(&"send_push_notification"));
+        assert_eq!(ranked("топик")[0], "send_push_to_topic");
     }
 
     #[test]

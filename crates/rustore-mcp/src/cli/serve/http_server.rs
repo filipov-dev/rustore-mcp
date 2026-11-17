@@ -125,6 +125,17 @@ impl HttpSetup {
             .map_err(|err| anyhow!("cannot configure the RuStore API client: {err}"))?;
         config.timeout = Duration::from_secs(args.timeout);
         config.max_response_bytes = args.max_response_bytes;
+        // Push: файл секрета или профиль хоста. С `--key-file` (контейнер) системного
+        // хранилища может не быть, поэтому тогда — только `--push-file`.
+        config.push = match (args.push_file.as_deref(), args.key_file.is_some()) {
+            (Some(path), _) => Some(
+                rustore_api::push::PushConfig::new(&key_file::load_push(path)?).map_err(|err| {
+                    anyhow!("cannot configure the RuStore Push API client: {err}")
+                })?,
+            ),
+            (None, true) => None,
+            (None, false) => super::load_push(store, profile)?,
+        };
 
         let options = ServerOptions {
             max_access,

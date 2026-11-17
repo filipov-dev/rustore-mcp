@@ -279,6 +279,9 @@ fn payments_report<'a>(ctx: &'a Context, args: JsonObject) -> ToolFuture<'a> {
             )));
         }
         let statuses = statuses(&args)?;
+        // API принимает статусы только строчными (на `CONFIRMED` — 400), агенту и в отчёте
+        // они показываются заглавными, как в ответах.
+        let query_statuses: Vec<String> = statuses.iter().map(|s| s.to_lowercase()).collect();
         let save_to = optional_str(&args, "save_to")?;
         let include_user_id = bool_arg(&args, "include_user_id", false)?;
         if let Some(save_to) = save_to {
@@ -297,7 +300,7 @@ fn payments_report<'a>(ctx: &'a Context, args: JsonObject) -> ToolFuture<'a> {
                     json!({
                         "appId": app_id,
                         "invoiceDate": format_date(day),
-                        "invoiceStatuses": statuses,
+                        "invoiceStatuses": query_statuses,
                     }),
                     Collect {
                         page_size: PAGE_SIZE,
@@ -497,8 +500,8 @@ mod tests {
             .and(query_param("invoiceDate", "2026-01-10"))
             .and(query_param("pageNumber", "0"))
             .and(query_param("pageSize", "500"))
-            .and(query_param("invoiceStatuses", "CONFIRMED"))
-            .and(query_param("invoiceStatuses", "REFUNDED"))
+            .and(query_param("invoiceStatuses", "confirmed"))
+            .and(query_param("invoiceStatuses", "refunded"))
             .respond_with(ok(page(
                 vec![
                     payment(1, "CONFIRMED", "gems_100", 9900, "RUB"),

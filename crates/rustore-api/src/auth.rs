@@ -8,6 +8,11 @@
 //! На Windows ключ не помещается в одну запись Credential Manager паролем (UTF-16): там он
 //! хранится байтами и при необходимости частями (модуль [`parts`]).
 //!
+//! Учётные данные push (идентификатор проекта и сервисный токен, [`PushCredentials`]) —
+//! отдельная запись того же сервиса с именем `<профиль>/push` ([`push_account`]): символ `/`
+//! в имени профиля запрещён, поэтому запись push не совпадёт с записью другого профиля, а
+//! ключ RuStore API и сервисный токен заменяются и удаляются независимо.
+//!
 //! Запасного файлового хранилища нет: если системное хранилище недоступно (Linux без
 //! Secret Service), операции завершаются ошибкой [`AuthError::Unavailable`] с подсказкой.
 
@@ -15,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::key::ApiKey;
+use crate::push::PushCredentials;
 
 #[cfg(any(windows, test))]
 mod parts;
@@ -52,6 +58,18 @@ pub enum AuthError {
          key again with `rustore-mcp auth login --profile {profile} --key-file <key-file>`"
     )]
     Corrupted { profile: String },
+    /// У профиля нет учётных данных push.
+    #[error(
+        "no push credentials are stored for profile `{profile}`; store them with \
+         `rustore-mcp auth push login --profile {profile} --project-id <ID> --token-file <file>`"
+    )]
+    PushNotFound { profile: String },
+    /// В записи push лежит значение, которое не является учётными данными push.
+    #[error(
+        "the push credentials stored for profile `{profile}` are not valid; store them again \
+         with `rustore-mcp auth push login --profile {profile}`"
+    )]
+    PushCorrupted { profile: String },
     #[error("the system keychain is not available: {0}")]
     Unavailable(String),
     #[error("system keychain error: {0}")]
@@ -73,6 +91,51 @@ pub trait KeyStore: Send + Sync {
             Err(err) => Err(err),
         }
     }
+
+    /// Учётные данные push профиля. По умолчанию — [`AuthError::PushNotFound`]: хранилище,
+    /// которое не держит push, ведёт себя как профиль без push.
+    fn get_push(&self, profile: &str) -> Result<PushCredentials, AuthError> {
+        Err(AuthError::PushNotFound {
+            profile: profile.to_owned(),
+        })
+    }
+
+    fn set_push(&self, _profile: &str, _credentials: &PushCredentials) -> Result<(), AuthError> {
+        Err(AuthError::Backend(
+            "this key store does not keep push credentials".into(),
+        ))
+    }
+
+    fn delete_push(&self, profile: &str) -> Result<(), AuthError> {
+        Err(AuthError::PushNotFound {
+            profile: profile.to_owned(),
+        })
+    }
+}
+
+/// Имя записи учётных данных push профиля: `<профиль>/push`.
+pub fn push_account(profile: &str) -> String {
+    format!("{profile}/push")
+}
+
+/// Ошибки записи push называют профиль и подсказывают `auth push login`, а не `auth login`.
+fn push_error(profile: &str, err: AuthError) -> AuthError {
+    match err {
+        AuthError::NotFound { .. } => AuthError::PushNotFound {
+            profile: profile.to_owned(),
+        },
+        AuthError::Corrupted { .. } => AuthError::PushCorrupted {
+            profile: profile.to_owned(),
+        },
+        other => other,
+    }
+}
+
+/// Учётные данные push из значения записи; ошибка разбора не раскрывает значение.
+fn parse_stored_push(profile: &str, text: &str) -> Result<PushCredentials, AuthError> {
+    PushCredentials::from_stored(text).map_err(|_| AuthError::PushCorrupted {
+        profile: profile.to_owned(),
+    })
 }
 
 /// Ключ из значения записи; ошибка разбора не раскрывает значение.
@@ -142,6 +205,38 @@ impl KeyStore for KeyringStore {
             .delete_credential()
             .map_err(|err| map_error(profile, err))
     }
+
+    fn get_push(&self, profile: &str) -> Result<PushCredentials, AuthError> {
+        let account = push_account(profile);
+        let password = zeroize::Zeroizing::new(
+            Self::entry(&account)
+                .and_then(|entry| entry.get_password().map_err(|err| map_error(&account, err)))
+                .map_err(|err| push_error(profile, err))?,
+        );
+        parse_stored_push(profile, &password)
+    }
+
+    fn set_push(&self, profile: &str, credentials: &PushCredentials) -> Result<(), AuthError> {
+        let account = push_account(profile);
+        Self::entry(&account)
+            .and_then(|entry| {
+                entry
+                    .set_password(&credentials.to_stored())
+                    .map_err(|err| map_error(&account, err))
+            })
+            .map_err(|err| push_error(profile, err))
+    }
+
+    fn delete_push(&self, profile: &str) -> Result<(), AuthError> {
+        let account = push_account(profile);
+        Self::entry(&account)
+            .and_then(|entry| {
+                entry
+                    .delete_credential()
+                    .map_err(|err| map_error(&account, err))
+            })
+            .map_err(|err| push_error(profile, err))
+    }
 }
 
 /// Windows: ключ байтами UTF-8, частями, если не помещается в одну запись Credential Manager.
@@ -159,12 +254,34 @@ impl KeyStore for KeyringStore {
     fn delete(&self, profile: &str) -> Result<(), AuthError> {
         parts::delete_key(&parts::Credentials, profile)
     }
+
+    // Запись push короткая, но хранится так же байтами UTF-8 (и частями, если понадобится).
+    fn get_push(&self, profile: &str) -> Result<PushCredentials, AuthError> {
+        let text = parts::read_text(&parts::Credentials, &push_account(profile))
+            .map_err(|err| push_error(profile, err))?;
+        parse_stored_push(profile, &text)
+    }
+
+    fn set_push(&self, profile: &str, credentials: &PushCredentials) -> Result<(), AuthError> {
+        parts::write_text(
+            &parts::Credentials,
+            &push_account(profile),
+            &credentials.to_stored(),
+        )
+        .map_err(|err| push_error(profile, err))
+    }
+
+    fn delete_push(&self, profile: &str) -> Result<(), AuthError> {
+        parts::delete_key(&parts::Credentials, &push_account(profile))
+            .map_err(|err| push_error(profile, err))
+    }
 }
 
 /// Хранилище в памяти для тестов: системный keychain в автотестах не используется.
 #[derive(Debug, Default)]
 pub struct MemoryStore {
     keys: Mutex<HashMap<String, ApiKey>>,
+    push: Mutex<HashMap<String, PushCredentials>>,
 }
 
 impl MemoryStore {
@@ -174,6 +291,12 @@ impl MemoryStore {
 
     fn lock(&self) -> Result<MutexGuard<'_, HashMap<String, ApiKey>>, AuthError> {
         self.keys
+            .lock()
+            .map_err(|_| AuthError::Backend("the in-memory key store is poisoned".into()))
+    }
+
+    fn lock_push(&self) -> Result<MutexGuard<'_, HashMap<String, PushCredentials>>, AuthError> {
+        self.push
             .lock()
             .map_err(|_| AuthError::Backend("the in-memory key store is poisoned".into()))
     }
@@ -199,6 +322,30 @@ impl KeyStore for MemoryStore {
             .remove(profile)
             .map(|_| ())
             .ok_or_else(|| AuthError::NotFound {
+                profile: profile.to_owned(),
+            })
+    }
+
+    fn get_push(&self, profile: &str) -> Result<PushCredentials, AuthError> {
+        self.lock_push()?
+            .get(profile)
+            .cloned()
+            .ok_or_else(|| AuthError::PushNotFound {
+                profile: profile.to_owned(),
+            })
+    }
+
+    fn set_push(&self, profile: &str, credentials: &PushCredentials) -> Result<(), AuthError> {
+        self.lock_push()?
+            .insert(profile.to_owned(), credentials.clone());
+        Ok(())
+    }
+
+    fn delete_push(&self, profile: &str) -> Result<(), AuthError> {
+        self.lock_push()?
+            .remove(profile)
+            .map(|_| ())
+            .ok_or_else(|| AuthError::PushNotFound {
                 profile: profile.to_owned(),
             })
     }
@@ -238,6 +385,43 @@ mod tests {
             Err(AuthError::NotFound { .. })
         ));
         assert_eq!(store.get("claude-code").unwrap(), k2);
+    }
+
+    #[test]
+    fn push_credentials_are_kept_apart_from_the_key() {
+        let store = MemoryStore::new();
+        let push = PushCredentials::new("project-1", "service-token-value-0123").unwrap();
+        assert!(matches!(
+            store.get_push("codex"),
+            Err(AuthError::PushNotFound { profile }) if profile == "codex"
+        ));
+        store.set_push("codex", &push).unwrap();
+        assert_eq!(store.get_push("codex").unwrap(), push);
+        // Ключ RuStore API и push — разные записи.
+        assert!(!store.contains("codex").unwrap());
+        store.set("codex", &key("key-one")).unwrap();
+        store.delete("codex").unwrap();
+        assert_eq!(store.get_push("codex").unwrap(), push);
+        store.delete_push("codex").unwrap();
+        assert!(matches!(
+            store.delete_push("codex"),
+            Err(AuthError::PushNotFound { .. })
+        ));
+        assert_eq!(push_account("codex"), "codex/push");
+
+        let err = push_error(
+            "p",
+            AuthError::NotFound {
+                profile: "p/push".into(),
+            },
+        );
+        assert!(
+            err.to_string().contains("auth push login --profile p "),
+            "{err}"
+        );
+        let err = parse_stored_push("p", "{\"serviceToken\":\"secret-value\"}").unwrap_err();
+        assert!(matches!(err, AuthError::PushCorrupted { .. }), "{err:?}");
+        assert!(!err.to_string().contains("secret-value"), "{err}");
     }
 
     #[test]
@@ -300,5 +484,15 @@ mod tests {
         assert_eq!(store.get(profile).unwrap(), value);
         store.delete(profile).unwrap();
         assert!(!store.contains(profile).unwrap());
+
+        let push = PushCredentials::new("test-project", "test-service-token-value").unwrap();
+        let _ = store.delete_push(profile);
+        store.set_push(profile, &push).unwrap();
+        assert_eq!(store.get_push(profile).unwrap(), push);
+        store.delete_push(profile).unwrap();
+        assert!(matches!(
+            store.get_push(profile),
+            Err(AuthError::PushNotFound { .. })
+        ));
     }
 }

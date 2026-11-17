@@ -23,7 +23,7 @@
 use std::borrow::Cow;
 
 use percent_encoding::percent_decode_str;
-use rustore_api::spec::{AccessLevel, HttpMethod, OperationDef, operations};
+use rustore_api::spec::{AccessLevel, ApiService, HttpMethod, OperationDef, operations};
 
 /// Сколько раундов percent-раскодирования проверять (как в `validate_relative_path`).
 const MAX_DECODE_ROUNDS: usize = 3;
@@ -51,8 +51,11 @@ pub fn default_access(method: HttpMethod) -> AccessLevel {
 /// Порядок: сначала самые точные совпадения (больше литеральных символов), затем по имени.
 pub fn match_operations(method: HttpMethod, path: &str) -> Vec<RouteMatch> {
     let segments = request_segments(path);
+    // Только Public API: пути операций push заданы после префикса проекта на другом хосте и
+    // через `api_request` не вызываются.
     let mut matches: Vec<RouteMatch> = operations()
         .iter()
+        .filter(|op| op.service == ApiService::PublicApi)
         .filter(|op| op.method == method)
         .filter_map(|op| {
             template_specificity(op.path, &segments)
@@ -218,7 +221,7 @@ mod tests {
 
     #[test]
     fn templates_have_one_param_per_segment_and_the_public_root() {
-        for op in operations() {
+        for op in operations().iter().filter(|op| !op.service.is_push()) {
             let segments = request_segments(op.path);
             assert_eq!(
                 segments[0],
@@ -240,7 +243,7 @@ mod tests {
 
     #[test]
     fn every_operation_matches_its_own_template() {
-        for op in operations() {
+        for op in operations().iter().filter(|op| !op.service.is_push()) {
             let path = concrete(op.path);
             let decision = required_access(op.method, &path);
             assert!(
@@ -249,6 +252,16 @@ mod tests {
                 op.tool_name
             );
             assert!(decision.required >= op.access, "{}", op.tool_name);
+        }
+    }
+
+    #[test]
+    fn push_operations_are_not_routes_of_the_public_api() {
+        for path in ["/messages:send", "/topics/news/publish"] {
+            assert!(
+                match_operations(HttpMethod::Post, path).is_empty(),
+                "{path}"
+            );
         }
     }
 

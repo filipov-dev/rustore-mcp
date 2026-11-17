@@ -6,6 +6,7 @@
 //! - [`request`] — сборка запроса к API из аргументов инструмента;
 //! - [`api_request`] — инструмент запроса к произвольному пути API, [`routes`] — какой
 //!   уровень доступа нужен такому запросу;
+//! - [`auth_check`] — проверка прав ключа: доступные разделы API и приложения;
 //! - [`api_search`] — поиск по всем операциям API и составным инструментам, в том числе
 //!   выключенным;
 //! - [`composite`] — составные инструменты (несколько запросов за один вызов) и их контракт
@@ -18,7 +19,9 @@
 //! - [`custom_tools`] — пользовательские инструменты из `tools.toml`;
 //! - [`toolsets`] — наборы инструментов (`--toolsets`) и набор по умолчанию;
 //! - [`dynamic_toolsets`] — `list_toolsets`, `enable_toolset`, `disable_toolset` (режим
-//!   `--dynamic-toolsets`).
+//!   `--dynamic-toolsets`);
+//! - [`progress`] — сообщения о ходе долгих инструментов и часы ожидания;
+//! - [`prompts`] — подсказки MCP (`prompts/list`, `prompts/get`) для частых сценариев.
 //!
 //! Транспорт (stdio, HTTP) подключается в бинарнике `rustore-mcp`. Ядро о транспорте знает
 //! одно: работает ли сервер на машине агента ([`ServerOptions::local_machine`]). Ключ RuStore
@@ -27,12 +30,15 @@
 
 pub mod api_request;
 pub mod api_search;
+pub mod auth_check;
 pub mod composite;
 pub mod custom_tools;
 pub mod dynamic_toolsets;
 pub mod error;
 pub mod files;
 pub mod jq;
+pub mod progress;
+pub mod prompts;
 pub mod redact;
 pub mod registry;
 pub mod request;
@@ -46,6 +52,8 @@ pub use custom_tools::{CustomTool, CustomToolDef, CustomToolsFile};
 pub use error::ToolError;
 pub use files::{FilePolicy, FilePolicyError, LOCAL_FILES_DISABLED};
 pub use jq::JqRunner;
+pub use progress::{Clock, Progress, ProgressUpdate};
+pub use prompts::PromptDef;
 pub use registry::{RegisteredTool, ToolKind, ToolRegistry, access_name};
 pub use rustore_api;
 pub use server::{RuStoreServer, SERVER_NAME};

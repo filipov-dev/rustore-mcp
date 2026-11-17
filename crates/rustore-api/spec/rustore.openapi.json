@@ -8,6 +8,7 @@
       "index",
       "api-access-control",
       "api-access-control/access-details",
+      "api-access-control/api-access-control-batch",
       "api-access-control/create-edit-access",
       "api-access-control/revoke-access",
       "api-authorization-process",
@@ -64,6 +65,10 @@
       "api-upload-publication-app/publishing-change-settings",
       "api-upload-publication-app/send-draft-app-for-moderation",
       "api-upload-publication-app/upload-screenshot-v2"
+    ],
+    "x-push-pages": [
+      "/help/sdk/push-notifications/send-push-notifications",
+      "/help/sdk/push-notifications/topic-notifications"
     ]
   },
   "servers": [
@@ -108,9 +113,85 @@
     {
       "name": "Доступы",
       "description": "Доступы пользователей к приложению."
+    },
+    {
+      "name": "Push-уведомления",
+      "description": "Отправка push-уведомлений пользователям приложения: на токен устройства и по топикам. Другой хост (vkpns.rustore.ru, vkpns-topics.rustore.ru) и другой секрет — сервисный токен проекта push."
     }
   ],
   "paths": {
+    "/messages:send": {
+      "post": {
+        "operationId": "send_push_notification",
+        "summary": "Отправка push-уведомления на устройство",
+        "description": "Отправляет push-уведомление на одно устройство по его push-токену. Уведомление сразу приходит пользователю: проверьте получателя и текст. Сервер подставляет проект и сервисный токен push из профиля. При успехе ответ — пустой объект. Ошибки: PERMISSION_DENIED — неверный сервисный токен, NOT_FOUND — неверный или устаревший push-токен, INVALID_ARGUMENT — неверные параметры, TOO_MANY_REQUESTS — превышен лимит отправки.",
+        "tags": [
+          "Push-уведомления"
+        ],
+        "externalDocs": {
+          "url": "https://www.rustore.ru/help/sdk/push-notifications/send-push-notifications"
+        },
+        "servers": [
+          {
+            "url": "https://vkpns.rustore.ru/v1/projects/{project_id}",
+            "variables": {
+              "project_id": {
+                "default": "project_id",
+                "description": "Идентификатор проекта push из учётных данных push профиля; подставляет сервер."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "PushServiceToken": []
+          }
+        ],
+        "x-access-level": "destructive",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "$ref": "#/components/schemas/PushMessage"
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешный ответ.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Пустой объект."
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/public/applications/{appId}/catalog/products": {
       "get": {
         "operationId": "list_catalog_products",
@@ -515,21 +596,21 @@
             "name": "invoiceStatuses",
             "in": "query",
             "required": true,
-            "description": "Статусы платежей, которые должны входить в список.\n• `CREATED` - создан;\n• `EXECUTED` - запущен процесс оплаты;\n• `CONFIRMED` — финальный статус успешного платежа, денежные средства списаны с покупателя;\n• `CANCELLED` - отменен пользователем до запуска оплаты;\n• `REJECTED` - отказ при платеже (недостаточно средств, невалидный CVC или другие причины);\n• `EXPIRED` - истекло время на оплату;\n• `PAID` - для покупки потребляемых товаров, средства успешно захолдированы, покупка ожидает подтверждения со стороны разработчика;\n• `REVERSED` - для покупки потребляемых товаров: не поступило запроса на подтверждение холда, холд отменен, деньги возвращены покупателю;\n• `REFUNDED` - средства по счету возвращены покупателю. Пример: `created`.",
+            "description": "Статусы платежей, которые должны входить в список, строчными буквами; несколько статусов — повтором параметра. `created` — создан; `executed` — запущен процесс оплаты; `confirmed` — финальный статус успешного платежа, денежные средства списаны с покупателя; `cancelled` — отменён пользователем до запуска оплаты; `rejected` — отказ при платеже; `expired` — истекло время на оплату; `paid` — для потребляемых товаров средства захолдированы, покупка ждёт подтверждения разработчиком; `reversed` — холд отменён, деньги возвращены покупателю; `refunded` — средства по счёту возвращены покупателю.",
             "schema": {
               "type": "array",
               "items": {
                 "type": "string",
                 "enum": [
-                  "CREATED",
-                  "EXECUTED",
-                  "CONFIRMED",
-                  "CANCELLED",
-                  "REJECTED",
-                  "EXPIRED",
-                  "PAID",
-                  "REVERSED",
-                  "REFUNDED"
+                  "created",
+                  "executed",
+                  "confirmed",
+                  "cancelled",
+                  "rejected",
+                  "expired",
+                  "paid",
+                  "reversed",
+                  "refunded"
                 ]
               }
             }
@@ -2698,7 +2779,7 @@
           "Доступы"
         ],
         "summary": "Выдача и редактирование доступа",
-        "description": "Метод позволяет выдать и отредактировать доступ пользователям.",
+        "description": "Метод позволяет выдать и отредактировать доступ пользователям.\nМетод работает с именем пакета приложения (`packageName`). Для выдачи доступа по идентификатору приложения, в том числе до загрузки первой сборки, используйте пакетный метод.",
         "externalDocs": {
           "url": "https://www.rustore.ru/help/work-with-rustore-api/api-access-control/create-edit-access"
         },
@@ -2809,7 +2890,7 @@
           "Доступы"
         ],
         "summary": "Отзыв доступа",
-        "description": "Метод позволяет отозвать доступ у пользователя.",
+        "description": "Метод позволяет отозвать доступ у пользователя.\nМетод работает с именем пакета приложения (`packageName`). Для отзыва доступа по идентификатору приложения используйте пакетный метод.",
         "externalDocs": {
           "url": "https://www.rustore.ru/help/work-with-rustore-api/api-access-control/revoke-access"
         },
@@ -4504,6 +4585,183 @@
         }
       }
     },
+    "/public/v1/developer/roles": {
+      "get": {
+        "operationId": "list_developer_roles",
+        "tags": [
+          "Доступы"
+        ],
+        "summary": "Пакетное управление ролями разработчиков: Получить роли",
+        "description": "Метод возвращает активные роли разработчиков в приложениях, включая роли владельца. Результаты выдаются постранично. Страница содержит приложения, а все подходящие роли одного приложения возвращаются вместе.",
+        "externalDocs": {
+          "url": "https://www.rustore.ru/help/work-with-rustore-api/api-access-control/api-access-control-batch"
+        },
+        "x-access-level": "read",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "query",
+            "required": false,
+            "description": "Идентификаторы приложений (appId) через запятую, до 50; без параметра — все приложения, доступные ключу.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "devVkId",
+            "in": "query",
+            "required": false,
+            "description": "VK ID разработчика, от 1 до 20 цифр. Без параметра возвращаются назначения всех разработчиков. Пример: `9001`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "description": "Количество приложений на странице: от 1 до 500. По умолчанию 100. Пример: `100`.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "description": "Токен продолжения из `nextPageToken` предыдущего ответа. Пример: `<nextPageToken>`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ответ RuStore API в конверте.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "grant_developer_roles",
+        "tags": [
+          "Доступы"
+        ],
+        "summary": "Пакетное управление ролями разработчиков: Назначить или изменить роль",
+        "externalDocs": {
+          "url": "https://www.rustore.ru/help/work-with-rustore-api/api-access-control/api-access-control-batch"
+        },
+        "x-access-level": "destructive",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "appIds": {
+                    "type": "array",
+                    "description": "Идентификаторы приложений: от 1 до 500 положительных значений, элементы не могут быть `null`. Размер массива считается с учетом повторов. Каждое приложение обрабатывается один раз. Пример: `[101, 202]`."
+                  },
+                  "devVkId": {
+                    "type": "string",
+                    "description": "VK ID разработчика, от 1 до 20 цифр. Пример: `\"9001\"`."
+                  },
+                  "role": {
+                    "type": "string",
+                    "description": "Роль, которую нужно назначить. Допустимые значения указаны ниже. Пример: `\"DEV\"`."
+                  }
+                },
+                "required": [
+                  "appIds",
+                  "devVkId",
+                  "role"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ответ RuStore API в конверте.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "revoke_developer_roles",
+        "tags": [
+          "Доступы"
+        ],
+        "summary": "Пакетное управление ролями разработчиков: Отозвать роль",
+        "externalDocs": {
+          "url": "https://www.rustore.ru/help/work-with-rustore-api/api-access-control/api-access-control-batch"
+        },
+        "x-access-level": "destructive",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "appIds": {
+                    "type": "array",
+                    "description": "Идентификаторы приложений: от 1 до 500 положительных значений, элементы не могут быть `null`. Размер массива считается с учетом повторов. Каждое приложение обрабатывается один раз. Пример: `[101, 202]`."
+                  },
+                  "devVkId": {
+                    "type": "string",
+                    "description": "VK ID разработчика, от 1 до 20 цифр. Пример: `\"9001\"`."
+                  },
+                  "role": {
+                    "type": "string",
+                    "description": "Роль, которую нужно отозвать. Допустимые значения указаны ниже. Пример: `\"DEV\"`."
+                  }
+                },
+                "required": [
+                  "appIds",
+                  "devVkId",
+                  "role"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ответ RuStore API в конверте.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/public/v2/application/{packageName}/version/{versionId}": {
       "get": {
         "operationId": "get_version",
@@ -5848,6 +6106,240 @@
           }
         }
       }
+    },
+    "/topics/{topic}/batch_subscribe": {
+      "post": {
+        "operationId": "subscribe_to_push_topic",
+        "summary": "Подписка устройств на push-уведомления по топику",
+        "description": "Подписывает push-токены устройств на топик: следующие отправки в топик придут и на эти устройства. Сама подписка ничего не отправляет. При ошибках по части токенов ответ — HTTP 200 со списком errors.",
+        "tags": [
+          "Push-уведомления"
+        ],
+        "externalDocs": {
+          "url": "https://www.rustore.ru/help/sdk/push-notifications/topic-notifications"
+        },
+        "servers": [
+          {
+            "url": "https://vkpns-topics.rustore.ru/v1/projects/{project_id}",
+            "variables": {
+              "project_id": {
+                "default": "project_id",
+                "description": "Идентификатор проекта push из учётных данных push профиля; подставляет сервер."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "PushServiceToken": []
+          }
+        ],
+        "x-access-level": "write",
+        "parameters": [
+          {
+            "name": "topic",
+            "in": "path",
+            "required": true,
+            "description": "Имя топика в проекте push.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushTopicTokens"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешный ответ.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushTopicResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushTopicError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/topics/{topic}/batch_unsubscribe": {
+      "post": {
+        "operationId": "unsubscribe_from_push_topic",
+        "summary": "Отписка устройств от push-уведомлений по топику",
+        "description": "Отписывает push-токены устройств от топика. При ошибках по части токенов ответ — HTTP 200 со списком errors.",
+        "tags": [
+          "Push-уведомления"
+        ],
+        "externalDocs": {
+          "url": "https://www.rustore.ru/help/sdk/push-notifications/topic-notifications"
+        },
+        "servers": [
+          {
+            "url": "https://vkpns-topics.rustore.ru/v1/projects/{project_id}",
+            "variables": {
+              "project_id": {
+                "default": "project_id",
+                "description": "Идентификатор проекта push из учётных данных push профиля; подставляет сервер."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "PushServiceToken": []
+          }
+        ],
+        "x-access-level": "write",
+        "parameters": [
+          {
+            "name": "topic",
+            "in": "path",
+            "required": true,
+            "description": "Имя топика в проекте push.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushTopicTokens"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешный ответ.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushTopicResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushTopicError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/topics/{topic}/publish": {
+      "post": {
+        "operationId": "send_push_to_topic",
+        "summary": "Отправка push-уведомления в топик",
+        "description": "Отправляет push-уведомление всем устройствам, подписанным на топик. Уведомление сразу приходит всем подписчикам: проверьте топик и текст. Сервер подставляет проект и сервисный токен push из профиля.",
+        "tags": [
+          "Push-уведомления"
+        ],
+        "externalDocs": {
+          "url": "https://www.rustore.ru/help/sdk/push-notifications/topic-notifications"
+        },
+        "servers": [
+          {
+            "url": "https://vkpns-topics.rustore.ru/v1/projects/{project_id}",
+            "variables": {
+              "project_id": {
+                "default": "project_id",
+                "description": "Идентификатор проекта push из учётных данных push профиля; подставляет сервер."
+              }
+            }
+          }
+        ],
+        "security": [
+          {
+            "PushServiceToken": []
+          }
+        ],
+        "x-access-level": "destructive",
+        "parameters": [
+          {
+            "name": "topic",
+            "in": "path",
+            "required": true,
+            "description": "Имя топика в проекте push.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "$ref": "#/components/schemas/PushTopicMessage"
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешный ответ.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Сообщение об успешной отправке."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Ошибка.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushTopicError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5857,6 +6349,11 @@
         "in": "header",
         "name": "Public-Token",
         "description": "Токен доступа (JWE) из POST /public/auth/ по ключу RuStore API. Живёт 900 секунд."
+      },
+      "PushServiceToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Сервисный токен проекта push (консоль RuStore: приложение → Push-уведомления → Проекты). Уходит только на хосты push, не на public-api-m.rustore.ru."
       }
     },
     "schemas": {
@@ -5886,6 +6383,212 @@
         "required": [
           "code"
         ]
+      },
+      "PushNotification": {
+        "type": "object",
+        "description": "Базовый шаблон уведомления для всех платформ.",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Заголовок уведомления. Без заголовка SDK не показывает уведомление."
+          },
+          "body": {
+            "type": "string",
+            "description": "Текст уведомления."
+          },
+          "image": {
+            "type": "string",
+            "description": "URL картинки уведомления."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PushAndroidNotification": {
+        "type": "object",
+        "description": "Уведомление для Android; поля перекрывают message.notification.",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Заголовок уведомления."
+          },
+          "body": {
+            "type": "string",
+            "description": "Текст уведомления."
+          },
+          "icon": {
+            "type": "string",
+            "description": "Значок уведомления."
+          },
+          "color": {
+            "type": "string",
+            "description": "Цвет значка в формате `#rrggbb`."
+          },
+          "image": {
+            "type": "string",
+            "description": "URL картинки уведомления."
+          },
+          "channel_id": {
+            "type": "string",
+            "description": "Идентификатор канала уведомлений."
+          },
+          "click_action": {
+            "type": "string",
+            "description": "Действие по нажатию: intent action или deep link."
+          },
+          "click_action_type": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ],
+            "description": "Тип click_action: 0 — intent action (по умолчанию), 1 — deep link (RuStore 1.39.0 и новее)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PushAndroid": {
+        "type": "object",
+        "description": "Параметры для Android.",
+        "properties": {
+          "ttl": {
+            "type": "string",
+            "description": "Сколько хранить push, если устройство недоступно: длительность в секундах с суффиксом `s`, например `3.5s`. Без ttl или 0 — 4 недели."
+          },
+          "notification": {
+            "$ref": "#/components/schemas/PushAndroidNotification"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PushData": {
+        "type": "object",
+        "description": "Данные для приложения: пары «ключ — строка». С непустым data секции notification и android можно не передавать.",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "PushMessage": {
+        "type": "object",
+        "description": "Push-уведомление на одно устройство. Нужен data или notification (или android.notification). Объём message — не больше 4096 байт, сервер проверяет его до отправки.",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Push-токен устройства, полученный приложением через SDK."
+          },
+          "data": {
+            "$ref": "#/components/schemas/PushData"
+          },
+          "notification": {
+            "$ref": "#/components/schemas/PushNotification"
+          },
+          "android": {
+            "$ref": "#/components/schemas/PushAndroid"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "additionalProperties": false
+      },
+      "PushTopicMessage": {
+        "type": "object",
+        "description": "Push-уведомление всем устройствам, подписанным на топик. Нужен data или notification. Объём message — не больше 4096 байт, сервер проверяет его до отправки.",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PushData"
+          },
+          "notification": {
+            "$ref": "#/components/schemas/PushNotification"
+          },
+          "android": {
+            "$ref": "#/components/schemas/PushAndroid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PushError": {
+        "type": "object",
+        "description": "Ошибка Push API: HTTP-статус совпадает с error.code.",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "description": "HTTP-статус."
+              },
+              "message": {
+                "type": "string",
+                "description": "Подробности."
+              },
+              "status": {
+                "type": "string",
+                "description": "INVALID_ARGUMENT — неверные параметры, INTERNAL — внутренняя ошибка, TOO_MANY_REQUESTS — превышен лимит отправки, PERMISSION_DENIED — неверный сервисный токен, NOT_FOUND — неверный или устаревший push-токен устройства."
+              }
+            }
+          }
+        }
+      },
+      "PushTopicError": {
+        "type": "object",
+        "description": "Ошибка API топиков.",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "description": "Код ошибки, например 2000 (BAD_REQUEST) или 1001 (FORBIDDEN)."
+          },
+          "status": {
+            "type": "string",
+            "description": "Статус, например BAD_REQUEST или FORBIDDEN."
+          },
+          "message": {
+            "type": "string",
+            "description": "Подробности, например «s2s token invalid»."
+          }
+        }
+      },
+      "PushTopicTokens": {
+        "type": "object",
+        "properties": {
+          "push_tokens": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Push-токены устройств."
+          }
+        },
+        "required": [
+          "push_tokens"
+        ],
+        "additionalProperties": false
+      },
+      "PushTopicResult": {
+        "type": "object",
+        "description": "Результат подписки или отписки: при ошибках по части токенов — HTTP 200 и список errors.",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "`success` или число ошибок, например «1 error(s)»."
+          },
+          "errors": {
+            "type": "array",
+            "description": "Ошибки по токенам.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "push_token": {
+                  "type": "string",
+                  "description": "Push-токен устройства (сервер скрывает его в ответе)."
+                },
+                "error": {
+                  "$ref": "#/components/schemas/PushTopicError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "responses": {

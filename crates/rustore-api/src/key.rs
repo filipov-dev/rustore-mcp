@@ -139,12 +139,14 @@ pub struct ApiKey {
     bits: usize,
 }
 
-/// Запись ключа в системном хранилище и в файле ключа: `{"keyId", "privateKey"}`.
+/// Запись ключа в системном хранилище и в файле ключа: `{"keyId", "privateKey"}`. Файл
+/// принимается и в формате Gradle-плагина публикации RuStore (`{"key_id", "client_secret"}`,
+/// его же пишет `key exec`).
 #[derive(Serialize, Deserialize)]
 struct StoredKey {
     #[serde(rename = "keyId", alias = "key_id")]
     key_id: Option<String>,
-    #[serde(rename = "privateKey", alias = "private_key")]
+    #[serde(rename = "privateKey", alias = "private_key", alias = "client_secret")]
     private_key: Option<String>,
 }
 
@@ -171,8 +173,9 @@ impl ApiKey {
 
     /// Ключ из содержимого файла ключа (`auth login --key-file`, `serve --http --key-file`):
     ///
-    /// - JSON `{"keyId": "...", "privateKey": "..."}` — `keyId` из файла; `key_id`, если
-    ///   задан, должен с ним совпасть;
+    /// - JSON `{"keyId": "...", "privateKey": "..."}` (или `{"key_id", "client_secret"}`,
+    ///   как у Gradle-плагина публикации RuStore) — `keyId` из файла; `key_id`, если задан,
+    ///   должен с ним совпасть;
     /// - только приватный ключ (Base64 или PEM) — `keyId` обязателен в `key_id`.
     ///
     /// Возвращает `Ok(None)`, если в файле только приватный ключ, а `key_id` не задан:
@@ -604,6 +607,13 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("differs"), "{err}");
+        // Файл Gradle-плагина публикации RuStore.
+        let gradle =
+            serde_json::json!({"key_id": TEST_KEY_ID, "client_secret": base64}).to_string();
+        assert_eq!(
+            ApiKey::parse_key_file(&gradle, None).unwrap(),
+            Some(key.clone())
+        );
         // Только приватный ключ: keyId нужен отдельно.
         assert_eq!(ApiKey::parse_key_file(&base64, None).unwrap(), None);
         assert_eq!(

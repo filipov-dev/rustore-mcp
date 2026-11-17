@@ -11,7 +11,9 @@
 use std::collections::HashMap;
 
 use rmcp::model::JsonObject;
-use rustore_api::executor::{ApiRequest, FileSource, MultipartPart, RequestBody, render_path};
+use rustore_api::executor::{
+    ApiRequest, FileSource, MultipartPart, RequestBody, render_service_path,
+};
 use rustore_api::spec::{OperationDef, ParamDef, ParamLocation, ParamType, ResponseKind};
 use serde_json::Value;
 
@@ -77,7 +79,8 @@ pub fn build_request(
         body = RequestBody::Multipart(parts);
     }
 
-    let path = render_path(op.path, |name| path_values.get(name).cloned())?;
+    // Путь проверяется для сервиса операции: у push он задаётся после префикса проекта.
+    let path = render_service_path(op.service, op.path, |name| path_values.get(name).cloned())?;
     let save_to = match args.get(SAVE_TO_ARG).filter(|value| !value.is_null()) {
         Some(value) if takes_save_to(op) => {
             let Value::String(target) = value else {
@@ -97,6 +100,7 @@ pub fn build_request(
 
     Ok(ApiRequest {
         method: op.method,
+        service: op.service,
         path,
         query,
         body,

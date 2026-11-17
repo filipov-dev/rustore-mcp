@@ -22,6 +22,21 @@ const EXECUTOR_HEADERS: &[&str] = &["Public-Token"];
 /// Ключи элемента `paths`, кроме методов, которые генератор понимает.
 const PATH_ITEM_KEYS: &[&str] = &["parameters", "summary", "description"];
 
+/// Адреса `servers` операций вне Public API → вариант `ApiService` в `spec.rs`. У операций
+/// Public API поля `servers` нет: их адрес — общий `servers` спецификации. Неизвестный адрес —
+/// ошибка сборки: хост и секрет запроса выбирает исполнитель, новый сервис нужно добавить и
+/// туда.
+const SERVICES: &[(&str, &str)] = &[
+    (
+        "https://vkpns.rustore.ru/v1/projects/{project_id}",
+        "ApiService::Push",
+    ),
+    (
+        "https://vkpns-topics.rustore.ru/v1/projects/{project_id}",
+        "ApiService::PushTopics",
+    ),
+];
+
 const JSON_MEDIA: &str = "application/json";
 const MULTIPART_MEDIA: &str = "multipart/form-data";
 const BINARY_MEDIA: &str = "application/octet-stream";
@@ -103,6 +118,8 @@ struct Operation {
     description: String,
     docs_url: String,
     method: &'static str,
+    /// Имя варианта `ApiService` в `spec.rs`.
+    service: &'static str,
     path: String,
     access: &'static str,
     params: Vec<Param>,
@@ -222,6 +239,7 @@ fn parse_operation(
         Some("destructive") => "AccessLevel::Destructive",
         other => panic!("{operation_id}: неизвестный x-access-level {other:?}"),
     };
+    let service = service_of(&operation_id, op);
     let docs_url = op
         .get("externalDocs")
         .and_then(|docs| str_field(docs, "url"))
@@ -257,6 +275,7 @@ fn parse_operation(
         description: str_field(op, "description").unwrap_or_default(),
         docs_url,
         method,
+        service,
         path: path.to_owned(),
         access,
         params,
@@ -264,6 +283,32 @@ fn parse_operation(
         response,
         input_schema,
     }
+}
+
+/// Сервис операции по её `servers`: без поля — Public API, иначе адрес из [`SERVICES`].
+fn service_of(operation_id: &str, op: &Value) -> &'static str {
+    let Some(servers) = op.get("servers") else {
+        return "ApiService::PublicApi";
+    };
+    let urls: Vec<&str> = servers
+        .as_array()
+        .map(|servers| {
+            servers
+                .iter()
+                .filter_map(|server| server.get("url").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    let [url] = urls.as_slice() else {
+        panic!("{operation_id}: в servers должен быть ровно один url, а не {urls:?}");
+    };
+    SERVICES
+        .iter()
+        .find(|(known, _)| known == url)
+        .map(|(_, service)| *service)
+        .unwrap_or_else(|| {
+            panic!("{operation_id}: неизвестный адрес сервиса {url}: добавь его в SERVICES")
+        })
 }
 
 fn str_field(value: &Value, key: &str) -> Option<String> {
@@ -602,6 +647,7 @@ fn emit(toolsets: &[Toolset], operations: &[Operation]) -> String {
         let _ = writeln!(out, "        description: {:?},", op.description);
         let _ = writeln!(out, "        docs_url: {:?},", op.docs_url);
         let _ = writeln!(out, "        method: {},", rust_method(op.method));
+        let _ = writeln!(out, "        service: {},", op.service);
         let _ = writeln!(out, "        path: {:?},", op.path);
         let _ = writeln!(out, "        access: {},", op.access);
         let _ = writeln!(out, "        params: &[");

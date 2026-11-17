@@ -164,6 +164,7 @@ fn every_tag_has_toolset() {
         "subscriptions",
         "catalog",
         "access",
+        "push",
     ];
     let slugs: Vec<&str> = toolsets().iter().map(|t| t.slug).collect();
     assert_eq!(slugs, expected);
@@ -323,12 +324,13 @@ fn path_params_match_templates() {
             "{}: path-параметр необязателен",
             op.tool_name
         );
-        assert!(
-            op.path.starts_with("/public/"),
-            "{}: {}",
-            op.tool_name,
-            op.path
-        );
+        // Пути push — после префикса проекта в адресе сервиса.
+        let root = if op.service.is_push() {
+            "/"
+        } else {
+            "/public/"
+        };
+        assert!(op.path.starts_with(root), "{}: {}", op.tool_name, op.path);
         assert!(
             !op.path.ends_with('/') && op.path != "/public/auth",
             "{}: {}",
@@ -506,6 +508,25 @@ fn responses_use_shared_envelope() {
     for (id, (_, _, raw)) in spec_operations(&spec) {
         let ok = &raw["responses"]["200"]["content"];
         let text = ok.to_string();
+        if raw["tags"][0] == "Push-уведомления" {
+            // Push API — свой сервис: без конверта, со своим секретом и страницами SDK.
+            assert!(!text.contains("Envelope"), "{id}");
+            assert_eq!(raw["security"][0]["PushServiceToken"], json!([]), "{id}");
+            assert!(
+                raw["servers"][0]["url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("https://vkpns")
+                        && url.ends_with("/v1/projects/{project_id}"))
+            );
+            assert!(
+                raw["externalDocs"]["url"]
+                    .as_str()
+                    .is_some_and(|url| url
+                        .starts_with("https://www.rustore.ru/help/sdk/push-notifications/")),
+                "{id}"
+            );
+            continue;
+        }
         if id == "export_reviews_csv" {
             assert!(ok["application/octet-stream"].is_object(), "{id}");
         } else {
@@ -590,6 +611,16 @@ fn snapshot_export_reviews_csv() {
 fn snapshot_delete_draft_version() {
     // DELETE черновика — уровень записи.
     snapshot!("delete_draft_version");
+}
+
+#[test]
+fn snapshot_send_push_notification() {
+    // Push API: другой сервис, тело с вложенным сообщением, уровень удаления.
+    assert_eq!(
+        op("send_push_notification").service,
+        rustore_api::spec::ApiService::Push
+    );
+    snapshot!("send_push_notification");
 }
 
 #[test]

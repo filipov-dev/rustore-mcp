@@ -468,6 +468,7 @@ fn flags_and_files_are_checked_at_start() {
         &["--http", "--dynamic-toolsets"],
         &["--http", "--allow-path", "/tmp"],
         &["--http", "--key-id", "x"],
+        &["--push-file", "push.json"],
     ] {
         assert!(try_parse(args).is_err(), "{args:?}");
     }
@@ -538,6 +539,49 @@ fn flags_and_files_are_checked_at_start() {
         clients.servers[1].options().toolsets,
         Some(vec![first_toolset().to_owned()])
     );
+}
+
+/// Push в HTTP-режиме: файл секрета `--push-file` с теми же проверками прав; с `--key-file`
+/// без него push нет, системное хранилище не читается.
+#[test]
+fn push_file_is_read_like_the_key_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = fixture();
+    let (tokens, key) = (fixture.tokens.as_str(), fixture.key.as_str());
+    let service_token = "push-service-token-abcdef0123456789";
+    let push = fixture._dir.path().join("push.json");
+    std::fs::write(
+        &push,
+        json!({"projectId": "myproject-b5ae1", "serviceToken": service_token}).to_string(),
+    )
+    .unwrap();
+    std::fs::set_permissions(&push, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let push = push.to_str().unwrap();
+    let base = [
+        "--http",
+        "--access-tokens",
+        tokens,
+        "--key-file",
+        key,
+        "--allow-write",
+    ];
+
+    let setup = load(&base).unwrap();
+    assert!(setup.config.push.is_none());
+
+    let mut args = base.to_vec();
+    args.extend(["--push-file", push]);
+    let setup = load(&args).unwrap();
+    let config = setup.config.push.as_ref().unwrap();
+    assert_eq!(config.project_id, "myproject-b5ae1");
+    assert!(!format!("{config:?}").contains(service_token));
+
+    std::fs::set_permissions(push, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let err = format!("{:#}", load(&args).err().unwrap());
+    assert!(err.contains("push file"), "{err}");
+    assert!(err.contains("accessible by other users"), "{err}");
+    assert!(!err.contains(service_token), "{err}");
 }
 
 #[test]

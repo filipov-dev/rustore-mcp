@@ -7,11 +7,16 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use clap::{Args, Subcommand};
 use rustore_api::auth::{AuthError, KEYRING_SERVICE, KeyStore, KeyringStore};
 use rustore_api::key::CONSOLE_HINT;
+use rustore_api::spec::AccessLevel;
+use rustore_mcp_core::FilePolicy;
+use rustore_mcp_core::auth_check::{AppStatus, SectionStatus, check_access};
+use rustore_mcp_core::composite::Context;
 
+use crate::cli::key::load_key;
 use crate::login::{KeySource, offer_to_delete_key_file, store_new_key};
 use crate::profiles::{
     DEFAULT_PROFILE, ProfileRepo, ProfileSettings, validate_package_name, validate_profile_name,
@@ -19,15 +24,18 @@ use crate::profiles::{
 use crate::ui::{NonInteractiveUi, TerminalUi, Ui};
 use crate::verify::{ApiVerifier, KeyVerifier};
 
+pub mod push;
+
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
     /// Store a RuStore API key (key ID and private key) for a profile.
     ///
     /// The key is read from a file (--key-file, or a path asked in a terminal) or from stdin
     /// (--key-stdin), never from a command-line value or an environment variable. The file
-    /// is either JSON {"keyId": ..., "privateKey": ...} or only the private key (the Base64
-    /// text shown when the key is created, or PEM); then pass --key-id or answer the
-    /// question. The key is checked by getting a token and listing the apps
+    /// is either JSON {"keyId": ..., "privateKey": ...} (or {"key_id": ..., "client_secret":
+    /// ...}, the credentials file of the RuStore publishing Gradle plugin) or only the private
+    /// key (the Base64 text shown when the key is created, or PEM); then pass --key-id or
+    /// answer the question. The key is checked by getting a token and listing the apps
     /// (GET /public/v1/application) and saved in the system keychain only if the check
     /// passes. It is never written to profiles.toml. Replaces the stored key if there is
     /// one.
@@ -38,6 +46,19 @@ pub enum AuthCommand {
     Status(StatusArgs),
     /// Remove the stored key of the profile from the system keychain.
     Logout(LogoutArgs),
+    /// Check which sections of the RuStore API and which apps the key of the profile may use.
+    ///
+    /// Permissions of a key are ticked in the RuStore console (Company > RuStore API) per
+    /// method and per app, and methods or apps added later are not added to an existing key.
+    /// The check sends one read-only request per section (apps, releases, listing, reviews,
+    /// purchases, subscriptions, catalog, access), on the apps of the company in turn, and
+    /// prints whether each section is available and which apps the key can access. Response
+    /// data is not printed. The same report is the auth_check tool of the MCP server.
+    Check(CheckArgs),
+    /// Store or remove the push project ID and service token of a profile (RuStore Push
+    /// API, toolset `push`). They are kept apart from the RuStore API key.
+    #[command(subcommand)]
+    Push(push::PushCommand),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -75,11 +96,22 @@ pub struct StatusArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct CheckArgs {
+    /// Profile name.
+    #[arg(long, default_value = DEFAULT_PROFILE)]
+    pub profile: String,
+    /// Print the report as JSON (the result of the auth_check tool).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct LogoutArgs {
     /// Profile name.
     #[arg(long, default_value = DEFAULT_PROFILE)]
     pub profile: String,
-    /// Also remove the profile settings from profiles.toml.
+    /// Also remove the profile settings from profiles.toml and the push credentials of
+    /// the profile from the system keychain.
     #[arg(long)]
     pub forget: bool,
 }
@@ -135,6 +167,21 @@ pub async fn run(command: AuthCommand) -> anyhow::Result<()> {
         }
         AuthCommand::Logout(args) => {
             logout(&store, &repo, &mut TerminalUi, &args.profile, args.forget)
+        }
+        AuthCommand::Check(args) => {
+            check(&store, &repo, &ApiVerifier::new()?, &mut TerminalUi, &args).await
+        }
+        AuthCommand::Push(push::PushCommand::Login(args)) => {
+            if args.token_stdin {
+                // stdin занят токеном: вопросов нет.
+                let mut stdin = std::io::stdin().lock();
+                push::login(&store, &mut NonInteractiveUi, &args, Some(&mut stdin))
+            } else {
+                push::login(&store, &mut TerminalUi, &args, None)
+            }
+        }
+        AuthCommand::Push(push::PushCommand::Logout(args)) => {
+            push::logout(&store, &mut TerminalUi, &args.profile)
         }
     }
 }
@@ -234,6 +281,7 @@ pub async fn status<V: KeyVerifier>(
         (None, _) => "-".to_owned(),
     };
     ui.say(&format!("Check:     {check}"));
+    ui.say(&format!("Push:      {}", push::describe(store, profile)?));
     match &settings {
         Some(settings) => describe_settings(ui, settings),
         None => ui.say("Settings:  none (read-only defaults)"),
@@ -267,6 +315,104 @@ fn describe_settings(ui: &mut dyn Ui, settings: &ProfileSettings) {
     ui.say(&format!("Toolsets:  {toolsets}"));
 }
 
+/// `auth check`: отчёт о правах ключа из ядра ([`check_access`]), напечатанный таблицей или
+/// JSON. Логика проверки — в ядре, здесь только ключ профиля, клиент и вывод.
+pub async fn check(
+    store: &dyn KeyStore,
+    repo: &ProfileRepo,
+    verifier: &ApiVerifier,
+    ui: &mut dyn Ui,
+    args: &CheckArgs,
+) -> anyhow::Result<()> {
+    let profile = args.profile.as_str();
+    let key = load_key(store, profile)?;
+    let packages = repo
+        .get(profile)?
+        .map(|settings| settings.packages)
+        .unwrap_or_default();
+    let client = verifier
+        .client(&key)
+        .await
+        .map_err(|err| anyhow!("RuStore did not issue a token for the key: {err:#}"))?;
+    let ctx = Context::new(client, FilePolicy::disabled(), AccessLevel::Read, packages);
+    let report = check_access(&ctx)
+        .await
+        .map_err(|err| anyhow!("the check failed: {err}"))?;
+    if args.json {
+        ui.say(&serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    ui.say(&format!("Profile:   {profile}"));
+    ui.say(&format!("Key:       {}", key.key_id().masked()));
+    ui.say("");
+    let width = report
+        .sections
+        .iter()
+        .map(|section| section.toolset.len())
+        .max()
+        .unwrap_or(0);
+    ui.say(&format!(
+        "{:width$}  {:11}  Method (tool and its name in the RuStore console)",
+        "Section", "Status"
+    ));
+    for section in &report.sections {
+        ui.say(&format!(
+            "{:width$}  {:11}  {} \"{}\"",
+            section.toolset,
+            section.status.as_str(),
+            section.method,
+            section.method_title
+        ));
+        if section.status != SectionStatus::Available
+            && let Some(detail) = &section.detail
+        {
+            ui.say(&format!("{:width$}  {:11}  {detail}", "", ""));
+        }
+    }
+    ui.say("");
+    let accessible = report.accessible_apps().count();
+    let source = if report.apps_source == "profile" {
+        " (default packages of the profile)"
+    } else {
+        ""
+    };
+    ui.say(&format!(
+        "Apps:      {accessible} of {} accessible{source}{}",
+        report.apps.len(),
+        if report.apps_complete || report.apps_source == "profile" {
+            ""
+        } else {
+            ", the list is incomplete"
+        }
+    ));
+    let width = report
+        .apps
+        .iter()
+        .map(|app| app.package_name.len())
+        .max()
+        .unwrap_or(0);
+    for app in &report.apps {
+        let mut line = format!("  {:width$}  {:11}", app.package_name, app.status.as_str());
+        if let Some(name) = &app.app_name {
+            line.push_str(&format!("  {name}"));
+        }
+        if let Some(id) = &app.app_id {
+            line.push_str(&format!(" (appId {id})"));
+        }
+        ui.say(line.trim_end());
+        if app.status != AppStatus::Accessible
+            && let Some(detail) = &app.detail
+        {
+            ui.say(&format!("  {:width$}  {detail}", ""));
+        }
+    }
+    for note in &report.notes {
+        ui.say("");
+        ui.say(&format!("Note: {note}"));
+    }
+    Ok(())
+}
+
 pub fn logout(
     store: &dyn KeyStore,
     repo: &ProfileRepo,
@@ -286,6 +432,14 @@ pub fn logout(
         Err(err) => return Err(err.into()),
     }
     if forget {
+        // Профиль забывается целиком: вместе с ним и учётные данные push.
+        match store.delete_push(profile) {
+            Ok(()) => ui.say(&format!(
+                "Push credentials of profile `{profile}` removed from the system keychain."
+            )),
+            Err(AuthError::PushNotFound { .. }) => {}
+            Err(err) => return Err(err.into()),
+        }
         if repo.remove(profile)? {
             ui.say(&format!(
                 "Profile `{profile}` removed from {}.",
@@ -411,11 +565,28 @@ mod tests {
         assert!(text.contains("Key:       test***"), "{text}");
         assert!(text.contains("listed 2 apps"), "{text}");
         assert!(text.contains("Packages:  com.example.app"), "{text}");
+        assert!(text.contains("Push:      not configured"), "{text}");
         assert!(!text.contains(testing::TEST_KEY_ID), "{text}");
+
+        // Push настроен: статус показывает это без токена, `--forget` удаляет и его.
+        let push = rustore_api::push::PushCredentials::new(
+            "myproject-b5ae1",
+            "push-service-token-abcdef0123456789",
+        )
+        .unwrap();
+        s.store.set_push("codex", &push).unwrap();
+        let mut ui = ScriptedUi::default();
+        status::<FakeVerifier>(&s.store, &s.repo, None, &mut ui, "codex")
+            .await
+            .unwrap();
+        let text = ui.text();
+        assert!(text.contains("Push:      configured"), "{text}");
+        assert!(!text.contains("push-service-token"), "{text}");
 
         let mut ui = ScriptedUi::default();
         logout(&s.store, &s.repo, &mut ui, "codex", true).unwrap();
         assert!(!s.store.contains("codex").unwrap());
+        assert!(s.store.get_push("codex").is_err());
         assert!(s.repo.get("codex").unwrap().is_none());
         assert!(ui.text().contains("Company > RuStore API"), "{}", ui.text());
 
@@ -590,6 +761,109 @@ mod tests {
             )
             .await
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn check_prints_sections_and_apps() {
+        use wiremock::matchers::path_regex;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/public/auth/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": "OK",
+                "body": {"jwe": "jwe-token-for-tests", "ttl": 900}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/public/v1/application"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": "OK",
+                "body": {"content": [
+                    {"packageName": "com.example.one", "appName": "One", "appId": 11},
+                    {"packageName": "com.example.two", "appName": "Two", "appId": 12}
+                ]}
+            })))
+            .mount(&server)
+            .await;
+        // Первое приложение доступно, кроме платежей; второе — нет.
+        Mock::given(method("GET"))
+            .and(path("/public/applications/11/invoices"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "code": "FORBIDDEN", "message": "Access denied"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex("(com\\.example\\.one|/11/)"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": "OK", "body": {"content": []}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex("^/public/"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "code": "FORBIDDEN", "message": "Access denied"
+            })))
+            .mount(&server)
+            .await;
+        let s = setup();
+        s.store.set("work", &testing::api_key()).unwrap();
+        let verifier = ApiVerifier::with_base_url(&server.uri()).unwrap();
+        let check_args = CheckArgs {
+            profile: "work".into(),
+            json: false,
+        };
+        let mut ui = ScriptedUi::default();
+        check(&s.store, &s.repo, &verifier, &mut ui, &check_args)
+            .await
+            .unwrap();
+        let text = ui.text();
+        assert!(text.contains("Key:       test***"), "{text}");
+        assert!(text.contains("apps           available"), "{text}");
+        assert!(text.contains("purchases      denied"), "{text}");
+        assert!(text.contains("is not ticked for the key"), "{text}");
+        assert!(text.contains("listing        not checked"), "{text}");
+        assert!(text.contains("Apps:      1 of 2 accessible"), "{text}");
+        assert!(
+            text.contains("com.example.one  accessible   One (appId 11)"),
+            "{text}"
+        );
+        assert!(text.contains("com.example.two  denied"), "{text}");
+        assert!(!text.contains("jwe-token-for-tests"), "{text}");
+        assert!(!text.contains(testing::TEST_KEY_ID), "{text}");
+
+        let mut ui = ScriptedUi::default();
+        let json_args = CheckArgs {
+            json: true,
+            ..check_args
+        };
+        check(&s.store, &s.repo, &verifier, &mut ui, &json_args)
+            .await
+            .unwrap();
+        let report: serde_json::Value = serde_json::from_str(&ui.text()).unwrap();
+        assert_eq!(report["sections"][0]["status"], "available");
+        assert_eq!(report["apps"][1]["status"], "denied");
+
+        // Без ключа — подсказка про auth login.
+        let err = check(
+            &s.store,
+            &s.repo,
+            &verifier,
+            &mut ScriptedUi::default(),
+            &CheckArgs {
+                profile: "nokey".into(),
+                json: false,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("auth login --profile nokey"),
+            "{err}"
         );
     }
 

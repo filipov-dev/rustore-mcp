@@ -21,6 +21,10 @@
 //! операций, поэтому файлы проходят [`FilePolicy`], а уровень операции проверяется по уровню
 //! сервера. Пути не пишутся строками, а заголовок `Public-Token` недоступен.
 //!
+//! Файлы хранилища RuStore по ссылкам из ответов API (иконка и скриншоты версии) скачиваются
+//! только через [`Context::external`]: клиент без токена, только https и только хосты из
+//! белого списка ([`rustore_api::external`]).
+//!
 //! Мелкие помощники (аргументы, имя пакета, ошибки) — в [`common`].
 //!
 //! Как добавить инструмент:
@@ -42,12 +46,14 @@ use std::pin::Pin;
 
 use rmcp::model::JsonObject;
 use rustore_api::executor::{ApiClient, ApiResponse, Pagination, ResponseBody};
+use rustore_api::external::ExternalClient;
 use rustore_api::spec::{AccessLevel, OperationDef, operations};
 use serde_json::Value;
 
 use crate::ServerOptions;
 use crate::error::ToolError;
 use crate::files::FilePolicy;
+use crate::progress::{Clock, Progress, ProgressUpdate};
 use crate::redact::redact_api_error;
 use crate::request::build_request;
 use crate::response::page_argument;
@@ -76,6 +82,8 @@ groups! {
     reviews,
     payments,
     access,
+    catalog,
+    auth,
 }
 
 /// Результат составного инструмента: JSON для агента.
@@ -127,6 +135,12 @@ pub struct Context {
     files: FilePolicy,
     max_access: AccessLevel,
     packages: Vec<String>,
+    /// Получатель сообщений о ходе вызова, если клиент передал `progressToken`.
+    progress: Option<Progress>,
+    /// Часы инструментов с ожиданием; в тестах — ручные.
+    clock: Clock,
+    /// Клиент хранилища RuStore; `None` — его не удалось создать (ошибка — при скачивании).
+    external: Option<ExternalClient>,
 }
 
 /// Ответ операции для составного инструмента: тело (без конверта RuStore) и постраничная
@@ -199,7 +213,54 @@ impl Context {
             files,
             max_access,
             packages,
+            external: ExternalClient::rustore_static().ok(),
+            progress: None,
+            clock: Clock::system(),
         }
+    }
+
+    /// Тот же контекст с получателем сообщений о ходе (сервер ставит его на один вызов).
+    pub fn with_progress(mut self, progress: Progress) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    /// Тот же контекст с другими часами (ручные часы в тестах).
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Часы инструментов с ожиданием.
+    pub fn clock(&self) -> &Clock {
+        &self.clock
+    }
+
+    /// Сообщает клиенту о ходе вызова (`notifications/progress`); без `progressToken` у
+    /// клиента сообщение отбрасывается.
+    pub async fn report_progress(&self, progress: f64, total: Option<f64>, message: String) {
+        if let Some(sink) = &self.progress {
+            sink.report(ProgressUpdate {
+                progress,
+                total,
+                message,
+            })
+            .await;
+        }
+    }
+
+    /// Тот же контекст с другим клиентом хранилища (тесты подставляют клиент с http на
+    /// loopback).
+    pub fn with_external(mut self, external: ExternalClient) -> Self {
+        self.external = Some(external);
+        self
+    }
+
+    /// Клиент скачивания файлов хранилища RuStore (без токена, белый список хостов).
+    pub fn external(&self) -> Result<&ExternalClient, ToolError> {
+        self.external.as_ref().ok_or_else(|| {
+            ToolError::new("the download client for the RuStore storage could not be created")
+        })
     }
 
     /// Контекст сервера с настройками `options`.
@@ -225,6 +286,12 @@ impl Context {
     /// Имена пакетов по умолчанию из профиля.
     pub fn default_packages(&self) -> &[String] {
         &self.packages
+    }
+
+    /// Клиент API: для проверки прав ключа ([`crate::auth_check`]), которой нужен
+    /// HTTP-статус отказа, а не только текст ошибки.
+    pub(crate) fn client(&self) -> &ApiClient {
+        &self.client
     }
 
     /// Вызывает операцию `operation_id` с аргументами её инструмента (`args` — JSON-объект,
@@ -255,10 +322,17 @@ impl Context {
         let request = build_request(op, &args, &self.files)
             .map_err(|err| step_error(operation_id, err.message()))?;
         let path = request.path.clone();
-        tracing::debug!(operation = operation_id, path = %path, "шаг составного инструмента");
+        tracing::debug!(
+            operation = operation_id,
+            path = %rustore_api::path::path_for_log(&path),
+            "шаг составного инструмента"
+        );
         let response = self.client.execute(request).await.map_err(|err| {
             let (err, _) = redact_api_error(&path, err);
-            step_error(operation_id, ToolError::from(err).message())
+            step_error(
+                operation_id,
+                &crate::error::describe_api_error_with_hint(&err, op.service, Some(op), &path),
+            )
         })?;
         Ok(into_operation_response(response))
     }

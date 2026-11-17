@@ -17,6 +17,15 @@
 //! - размер тела ответа ограничен `max_response_bytes`, ошибки — [`ERROR_BODY_LIMIT`];
 //!   файлы загружаются потоково с диска, двоичные ответы пишутся только в файл (`save_to`);
 //! - при 429 (и 503 для идемпотентных методов) запрос повторяется с учётом `Retry-After`.
+//!
+//! Push API ([`ApiRequest::service`] — [`ApiService::Push`] или [`ApiService::PushTopics`]) —
+//! другие хосты и другой секрет ([`ClientConfig::push`]): адрес сервиса с префиксом проекта
+//! `/v1/projects/<проект>`, сервисный токен в `Authorization: Bearer`, свой HTTP-клиент с
+//! редиректами только в пределах своего origin. Сервисный токен не уходит на хост Public API,
+//! токен доступа Public API — на хосты push. У push нет конверта: ошибки
+//! `{"error": {"code", "message", "status"}}` или `{"code", "status", "message"}`. До запроса
+//! проверяется объём сообщения ([`crate::push::check_message_size`]), а push-токены
+//! устройств из тела вырезаются из ответов и ошибок.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -30,8 +39,12 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 use crate::access::{AccessToken, TokenError, TokenSource};
+use crate::push::{self, PushConfig};
+use crate::spec::ApiService;
 
-pub use crate::path::{render_path, validate_relative_path};
+pub use crate::path::{
+    render_path, render_service_path, validate_relative_path, validate_service_path,
+};
 
 /// Базовый адрес публичного API RuStore. Пути запросов начинаются с `/public/...`.
 pub const DEFAULT_BASE_URL: &str = "https://public-api-m.rustore.ru";
@@ -125,6 +138,9 @@ pub struct ClientConfig {
     /// На `save_to` не распространяется.
     pub max_response_bytes: usize,
     pub retry: RetryPolicy,
+    /// Push API: проект и сервисный токен. `None` — push для профиля не настроен: запросы
+    /// операций push завершаются [`ApiError::PushNotConfigured`] и ничего не отправляют.
+    pub push: Option<PushConfig>,
 }
 
 impl ClientConfig {
@@ -139,6 +155,7 @@ impl ClientConfig {
             transfer_timeout: DEFAULT_TRANSFER_TIMEOUT,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             retry: RetryPolicy::default(),
+            push: None,
         })
     }
 }
@@ -206,6 +223,8 @@ impl fmt::Debug for FileSource {
 #[derive(Debug, Clone)]
 pub struct ApiRequest {
     pub method: HttpMethod,
+    /// Сервис запроса: Public API или Push API (хост и секрет выбирает исполнитель).
+    pub service: ApiService,
     pub path: String,
     pub query: Vec<(String, String)>,
     pub body: RequestBody,
@@ -224,6 +243,7 @@ impl ApiRequest {
     pub fn new(method: HttpMethod, path: impl Into<String>) -> Self {
         Self {
             method,
+            service: ApiService::PublicApi,
             path: path.into(),
             query: Vec::new(),
             body: RequestBody::Empty,
@@ -387,6 +407,13 @@ pub enum ApiError {
     /// отправлялся.
     #[error("нет ключа RuStore API для запроса")]
     MissingToken,
+    /// Запрос к Push API, а проект и сервисный токен push не настроены
+    /// ([`ClientConfig::push`]); запрос не отправлялся.
+    #[error("push-уведомления не настроены: нет проекта и сервисного токена push")]
+    PushNotConfigured,
+    /// Сообщение push больше лимита Push API; запрос не отправлялся.
+    #[error("сообщение push занимает {size} байт, больше лимита {limit} байт")]
+    PushMessageTooLarge { size: usize, limit: usize },
     /// Не удалось получить токен по ключу; запрос не отправлялся (или не повторялся после
     /// 401). Текст — на английском, из [`TokenError`], без ключа, подписи и токена.
     #[error("не удалось получить токен RuStore API: {0}")]
@@ -433,6 +460,32 @@ impl From<TokenError> for ApiError {
 pub struct ApiClient {
     config: ClientConfig,
     http: reqwest::Client,
+    /// Push API: адреса сервисов с префиксом проекта и свои HTTP-клиенты (`None` — push не
+    /// настроен).
+    push: Option<PushEndpoints>,
+}
+
+/// Адреса и HTTP-клиенты сервисов Push API.
+#[derive(Clone)]
+struct PushEndpoints {
+    send: Endpoint,
+    topics: Endpoint,
+}
+
+/// Адрес сервиса (с префиксом пути) и HTTP-клиент с редиректами в пределах его origin.
+#[derive(Clone)]
+struct Endpoint {
+    base_url: url::Url,
+    http: reqwest::Client,
+}
+
+/// Куда и с каким секретом уходит запрос.
+struct Target<'a> {
+    base_url: &'a url::Url,
+    http: &'a reqwest::Client,
+    tokens: &'a Arc<dyn TokenSource>,
+    /// `Authorization: Bearer` (push) вместо `Public-Token`.
+    bearer: bool,
 }
 
 impl fmt::Debug for ApiClient {
@@ -446,39 +499,23 @@ impl fmt::Debug for ApiClient {
 impl ApiClient {
     pub fn new(config: ClientConfig) -> Result<Self, ApiError> {
         check_base_url(&config.base_url)?;
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::ACCEPT,
-            HeaderValue::from_static("application/json, */*;q=0.8"),
-        );
-
-        // Редиректы разрешены только в пределах origin из base_url. Внешние редиректы
-        // (например, на хранилище файлов) не выполняются: так токен и тело запроса не уходят
-        // на чужой хост, а клиент не превращается в прокси. Заголовок `Public-Token` — не
-        // `Authorization`, и reqwest сам его при смене хоста не убирает, поэтому это
-        // правило обязательно. Остановленный редирект возвращается как ответ 3xx и
-        // превращается в `ApiError::Http`.
-        let origin = config.base_url.origin();
-        let policy = redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= MAX_REDIRECTS {
-                attempt.error("слишком много редиректов")
-            } else if attempt.url().origin() == origin {
-                attempt.follow()
-            } else {
-                attempt.stop()
+        let http = http_client(&config, &config.base_url)?;
+        let push = match &config.push {
+            None => None,
+            Some(push) => {
+                let endpoint = |base: &url::Url| -> Result<Endpoint, ApiError> {
+                    check_base_url(base)?;
+                    let base_url = project_url(base, &push.project_id)?;
+                    let http = http_client(&config, &base_url)?;
+                    Ok(Endpoint { base_url, http })
+                };
+                Some(PushEndpoints {
+                    send: endpoint(&push.base_url)?,
+                    topics: endpoint(&push.topics_base_url)?,
+                })
             }
-        });
-
-        let http = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .default_headers(headers)
-            .timeout(config.timeout)
-            .redirect(policy)
-            .build()
-            .map_err(|e| ApiError::InvalidConfig(describe_reqwest_error(&e)))?;
-
-        Ok(Self { config, http })
+        };
+        Ok(Self { config, http, push })
     }
 
     pub fn config(&self) -> &ClientConfig {
@@ -509,30 +546,49 @@ impl ApiClient {
         request: ApiRequest,
         max_response_bytes: usize,
     ) -> Result<ApiResponse, ApiError> {
-        let Some(tokens) = &self.config.tokens else {
-            return Err(ApiError::MissingToken);
-        };
-        let url = self.build_url(&request.path, &request.query)?;
+        let service = request.service;
+        let target = self.target(service)?;
+        let tokens = target.tokens;
+        let url = self.build_url(target.base_url, service, &request.path, &request.query)?;
         if let Some(save_to) = &request.save_to {
             check_save_to(save_to).await?;
         }
         if let RequestBody::Multipart(parts) = &request.body {
             check_multipart(parts)?;
         }
+        // Push: объём сообщения — до запроса; push-токены устройств из тела вырезаются из
+        // ответа и ошибок, если сервис их отразит.
+        let secrets = match &request.body {
+            RequestBody::Json(body) if service.is_push() => {
+                push::check_message_size(body)?;
+                push::request_secrets(body)
+            }
+            _ => Vec::new(),
+        };
         let transfer = request.save_to.is_some() || has_file(&request.body);
         // Токен — после всех проверок запроса: ключ не подписывает запрос токена ради
         // запроса, который всё равно не уйдёт.
         let mut token = tokens.token().await?;
-        let mut auth = token_header(&token)?;
-        let token_name = HeaderName::from_static("public-token");
+        let mut auth = token_header(&token, target.bearer)?;
+        let token_name = if target.bearer {
+            header::AUTHORIZATION
+        } else {
+            HeaderName::from_static("public-token")
+        };
 
-        tracing::debug!(method = request.method.as_str(), path = %request.path, "запрос к RuStore API");
+        // Путь без идентификаторов пользователей: в путях доступов есть VK ID.
+        tracing::debug!(
+            method = request.method.as_str(),
+            service = service.as_str(),
+            path = %crate::path::path_for_log(&request.path),
+            "запрос к RuStore API"
+        );
 
         let retry = self.config.retry;
         let mut attempt: u32 = 0;
         let mut reauthorized = false;
         let response = loop {
-            let mut builder = self
+            let mut builder = target
                 .http
                 .request(request.method.to_reqwest(), url.clone())
                 .header(token_name.clone(), auth.clone());
@@ -558,7 +614,7 @@ impl ApiClient {
                 let fresh = tokens.token().await?;
                 if fresh != token {
                     tracing::debug!("RuStore API вернул 401, повтор с новым токеном");
-                    auth = token_header(&fresh)?;
+                    auth = token_header(&fresh, target.bearer)?;
                     token = fresh;
                     drop(response);
                     continue;
@@ -583,7 +639,9 @@ impl ApiClient {
                     continue;
                 }
             }
-            return Err(self.http_error(status, retry_after, response).await);
+            return Err(self
+                .http_error(service, &secrets, status, retry_after, response)
+                .await);
         };
 
         let status = response.status();
@@ -597,12 +655,21 @@ impl ApiClient {
                     content_type,
                 }
             }
-            None => self.read_body(response, max_response_bytes).await?,
+            None => {
+                self.read_body(response, max_response_bytes, &secrets)
+                    .await?
+            }
         };
-        let body = self.unwrap_envelope(status, body)?;
-        let pagination = match &body {
-            ResponseBody::Json(value) => Pagination::from_body(value),
-            _ => Pagination::default(),
+        // У Push API нет конверта и постраничной выдачи.
+        let (body, pagination) = if service.is_push() {
+            (body, Pagination::default())
+        } else {
+            let body = self.unwrap_envelope(status, body)?;
+            let pagination = match &body {
+                ResponseBody::Json(value) => Pagination::from_body(value),
+                _ => Pagination::default(),
+            };
+            (body, pagination)
         };
         Ok(ApiResponse {
             status: status.as_u16(),
@@ -648,11 +715,46 @@ impl ApiClient {
         }
     }
 
-    /// Собирает URL: префикс пути из `base_url` + проверенный относительный путь + query.
-    fn build_url(&self, path: &str, query: &[(String, String)]) -> Result<url::Url, ApiError> {
-        validate_relative_path(path)?;
+    /// Адрес, HTTP-клиент и источник секрета для сервиса запроса.
+    fn target(&self, service: ApiService) -> Result<Target<'_>, ApiError> {
+        if !service.is_push() {
+            let Some(tokens) = &self.config.tokens else {
+                return Err(ApiError::MissingToken);
+            };
+            return Ok(Target {
+                base_url: &self.config.base_url,
+                http: &self.http,
+                tokens,
+                bearer: false,
+            });
+        }
+        let (Some(config), Some(endpoints)) = (&self.config.push, &self.push) else {
+            return Err(ApiError::PushNotConfigured);
+        };
+        let endpoint = if service == ApiService::Push {
+            &endpoints.send
+        } else {
+            &endpoints.topics
+        };
+        Ok(Target {
+            base_url: &endpoint.base_url,
+            http: &endpoint.http,
+            tokens: &config.token,
+            bearer: true,
+        })
+    }
 
-        let mut url = self.config.base_url.clone();
+    /// Собирает URL: префикс пути из `base` + проверенный относительный путь + query.
+    fn build_url(
+        &self,
+        base: &url::Url,
+        service: ApiService,
+        path: &str,
+        query: &[(String, String)],
+    ) -> Result<url::Url, ApiError> {
+        validate_service_path(service, path)?;
+
+        let mut url = base.clone();
         let prefix = url.path().trim_end_matches('/').to_string();
         // Путь уже состоит только из pchar и `%XX`, поэтому set_path его не меняет.
         url.set_path(&format!("{prefix}{path}"));
@@ -666,7 +768,7 @@ impl ApiClient {
         }
 
         // Повторная проверка: итоговый адрес обязан остаться в origin базового URL.
-        if url.origin() != self.config.base_url.origin() {
+        if url.origin() != base.origin() {
             return Err(ApiError::InvalidPath(
                 "путь выводит за пределы RuStore API".into(),
             ));
@@ -676,6 +778,8 @@ impl ApiClient {
 
     async fn http_error(
         &self,
+        service: ApiService,
+        secrets: &[String],
         status: StatusCode,
         retry_after: Option<Duration>,
         mut response: reqwest::Response,
@@ -695,9 +799,13 @@ impl ApiClient {
         match read_limited(&mut response, ERROR_BODY_LIMIT).await {
             Ok((bytes, truncated)) => {
                 if !truncated && let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-                    let (code, message) = envelope_error_parts(&value);
-                    error.code = code.map(|c| self.redact(c));
-                    error.message = message.map(|m| self.redact(m));
+                    let (code, message) = if service.is_push() {
+                        push_error_parts(&value)
+                    } else {
+                        envelope_error_parts(&value)
+                    };
+                    error.code = code.map(|c| self.redact_with(c, secrets));
+                    error.message = message.map(|m| self.redact_with(m, secrets));
                 }
                 let mut text = lossy_prefix(&bytes).trim().to_string();
                 if truncated {
@@ -709,7 +817,7 @@ impl ApiClient {
                         .unwrap_or("пустой ответ")
                         .to_string();
                 }
-                error.body = self.redact(text);
+                error.body = self.redact_with(text, secrets);
             }
             Err(e) => error.body = format!("не удалось прочитать тело ошибки: {e}"),
         }
@@ -720,6 +828,7 @@ impl ApiClient {
         &self,
         mut response: reqwest::Response,
         limit: usize,
+        secrets: &[String],
     ) -> Result<ResponseBody, ApiError> {
         let content_type = content_type(&response);
         let content_length = response.content_length();
@@ -756,25 +865,46 @@ impl ApiClient {
             || content_type
                 .as_deref()
                 .is_none_or(|ct| ct.starts_with("text/plain"));
-        if json_allowed && let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+        if json_allowed && let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) {
+            if !secrets.is_empty() {
+                scrub_json(&mut value, secrets);
+            }
             return Ok(ResponseBody::Json(value));
         }
-        Ok(ResponseBody::Text(self.redact(lossy_prefix(&bytes))))
+        Ok(ResponseBody::Text(
+            self.redact_with(lossy_prefix(&bytes), secrets),
+        ))
     }
 
     /// Защита в глубину: если сервер вдруг отразил токен в тексте, вырезаем его вместе с
     /// недавними прежними токенами (например, отклонённым в ответе 401).
-    fn redact(&self, mut text: String) -> String {
-        let tokens = self
+    ///
+    /// Сервисный токен push вырезается так же: в тексте ответа его быть не должно ни от
+    /// какого сервиса.
+    fn redact(&self, text: String) -> String {
+        self.redact_with(text, &[])
+    }
+
+    /// [`Self::redact`] и ещё значения `extra` (push-токены устройств из тела запроса).
+    fn redact_with(&self, mut text: String, extra: &[String]) -> String {
+        let mut tokens = self
             .config
             .tokens
             .as_ref()
             .map(|tokens| tokens.known_tokens())
             .unwrap_or_default();
+        if let Some(push) = &self.config.push {
+            tokens.extend(push.token.known_tokens());
+        }
         for token in &tokens {
             let token = token.expose();
             if !token.is_empty() && text.contains(token) {
                 text = text.replace(token, "***");
+            }
+        }
+        for secret in extra {
+            if !secret.is_empty() && text.contains(secret.as_str()) {
+                text = text.replace(secret.as_str(), "***");
             }
         }
         text
@@ -794,13 +924,19 @@ fn retry_after_401(method: HttpMethod, same_url: bool) -> bool {
     method.is_idempotent() || same_url
 }
 
-/// Заголовок `Public-Token: <токен>`, помеченный как sensitive.
-fn token_header(token: &AccessToken) -> Result<HeaderValue, ApiError> {
+/// Значение заголовка с токеном, помеченное как sensitive: `Public-Token: <токен>` или
+/// (`bearer`, Push API) `Authorization: Bearer <токен>`.
+fn token_header(token: &AccessToken, bearer: bool) -> Result<HeaderValue, ApiError> {
     let value = token.expose();
     if value.trim().is_empty() {
         return Err(ApiError::InvalidConfig("пустой токен".into()));
     }
-    let mut header = HeaderValue::from_str(value).map_err(|_| {
+    let value = if bearer {
+        zeroize::Zeroizing::new(format!("Bearer {value}"))
+    } else {
+        zeroize::Zeroizing::new(value.to_owned())
+    };
+    let mut header = HeaderValue::from_str(&value).map_err(|_| {
         ApiError::InvalidConfig("токен содержит недопустимые для заголовка символы".into())
     })?;
     header.set_sensitive(true);
@@ -832,6 +968,101 @@ pub(crate) fn envelope_error_parts(value: &Value) -> (Option<String>, Option<Str
     let code = text("code");
     let message = text("message").or_else(|| text("error"));
     (code, message)
+}
+
+/// `code` и `message` ошибки Push API: `{"error": {"code", "message", "status"}}` (отправка на
+/// устройство) или `{"code", "status", "message"}` (топики). Кодом считается строковый
+/// `status` (`PERMISSION_DENIED`, `FORBIDDEN`): по нему понятно, что исправить.
+pub(crate) fn push_error_parts(value: &Value) -> (Option<String>, Option<String>) {
+    let inner = value.get("error").filter(|error| error.is_object());
+    let source = inner.unwrap_or(value);
+    let text = |key: &str| {
+        source
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let message = text("message").or_else(|| {
+        value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    (text("status").or_else(|| text("code")), message)
+}
+
+/// Заменяет значения `secrets` во всех строках и ключах JSON на `***`.
+fn scrub_json(value: &mut Value, secrets: &[String]) {
+    let scrub = |text: &mut String| {
+        for secret in secrets {
+            if !secret.is_empty() && text.contains(secret.as_str()) {
+                *text = text.replace(secret.as_str(), "***");
+            }
+        }
+    };
+    match value {
+        Value::String(text) => scrub(text),
+        Value::Array(items) => items.iter_mut().for_each(|item| scrub_json(item, secrets)),
+        Value::Object(map) => {
+            let entries = std::mem::take(map);
+            for (mut key, mut item) in entries {
+                scrub_json(&mut item, secrets);
+                scrub(&mut key);
+                map.insert(key, item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// HTTP-клиент с заголовками по умолчанию, таймаутом и редиректами только в пределах origin
+/// адреса `base`.
+fn http_client(config: &ClientConfig, base: &url::Url) -> Result<reqwest::Client, ApiError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ACCEPT,
+        HeaderValue::from_static("application/json, */*;q=0.8"),
+    );
+
+    // Редиректы разрешены только в пределах origin из base_url. Внешние редиректы
+    // (например, на хранилище файлов) не выполняются: так токен и тело запроса не уходят
+    // на чужой хост, а клиент не превращается в прокси. Заголовок `Public-Token` — не
+    // `Authorization`, и reqwest сам его при смене хоста не убирает, поэтому это
+    // правило обязательно. Остановленный редирект возвращается как ответ 3xx и
+    // превращается в `ApiError::Http`.
+    let origin = base.origin();
+    let policy = redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            attempt.error("слишком много редиректов")
+        } else if attempt.url().origin() == origin {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    });
+
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .default_headers(headers)
+        .timeout(config.timeout)
+        .redirect(policy)
+        .build()
+        .map_err(|e| ApiError::InvalidConfig(describe_reqwest_error(&e)))
+}
+
+/// Адрес сервиса push с префиксом проекта: `<base>/v1/projects/<проект>`.
+fn project_url(base: &url::Url, project_id: &str) -> Result<url::Url, ApiError> {
+    if !push::is_valid_project_id(project_id) {
+        return Err(ApiError::InvalidConfig(
+            "недопустимый идентификатор проекта push".into(),
+        ));
+    }
+    let mut url = base.clone();
+    let prefix = url.path().trim_end_matches('/').to_owned();
+    url.set_path(&format!("{prefix}/v1/projects/{project_id}"));
+    Ok(url)
 }
 
 /// Есть ли в теле файл (тогда действует `transfer_timeout`).
@@ -869,7 +1100,7 @@ pub(crate) fn check_base_url(base: &url::Url) -> Result<(), ApiError> {
     }
 }
 
-fn is_loopback(url: &url::Url) -> bool {
+pub(crate) fn is_loopback(url: &url::Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),

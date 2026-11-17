@@ -9,6 +9,8 @@ mod profiles;
 mod ui;
 mod verify;
 
+use std::process::ExitCode;
+
 use clap::{Parser, Subcommand};
 
 /// MCP server and CLI for the RuStore API.
@@ -26,6 +28,10 @@ enum Command {
     /// Manage the RuStore API keys of profiles in the system keychain.
     #[command(subcommand)]
     Auth(cli::auth::AuthCommand),
+    /// Give the RuStore API key of a profile to another program (the RuStore publishing
+    /// Gradle plugin, fastlane, scripts) in a temporary file.
+    #[command(subcommand)]
+    Key(cli::key::KeyCommand),
     /// Register the server in an MCP client (Claude Code or Codex) for a profile.
     ///
     /// Stores the RuStore API key of the profile in the system keychain (or keeps a working
@@ -41,14 +47,17 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<ExitCode> {
     // Спецификация встроена в бинарник; ссылка на неё не даёт линковщику её выбросить.
     let _ = rustore_mcp_core::rustore_api::OPENAPI_JSON.len();
+    let done = |()| ExitCode::SUCCESS;
     match Cli::parse().command {
-        Command::Serve(args) => cli::serve::run(args).await,
-        Command::Auth(command) => cli::auth::run(command).await,
-        Command::Connect(args) => cli::connect::run(args).await,
-        Command::Tools(command) => cli::tools::run(command),
-        Command::JqWorker => cli::jq_worker::run(),
+        Command::Serve(args) => cli::serve::run(args).await.map(done),
+        Command::Auth(command) => cli::auth::run(command).await.map(done),
+        // Код завершения — код дочерней команды.
+        Command::Key(command) => cli::key::run(command).await,
+        Command::Connect(args) => cli::connect::run(args).await.map(done),
+        Command::Tools(command) => cli::tools::run(command).map(done),
+        Command::JqWorker => cli::jq_worker::run().map(done),
     }
 }

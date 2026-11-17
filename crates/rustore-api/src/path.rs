@@ -7,9 +7,16 @@
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 
 use crate::executor::ApiError;
+use crate::spec::ApiService;
 
 /// Первый сегмент любого пути RuStore Public API: `/public/...`.
 pub const API_ROOT: &str = "public";
+
+/// Первый сегмент путей Push API после префикса проекта (`/v1/projects/<проект>`):
+/// отправка на устройство — только `/messages:send`.
+const PUSH_ROOTS: &[&str] = &["messages:send"];
+/// Первый сегмент путей API топиков push: `/topics/<топик>/...`.
+const PUSH_TOPICS_ROOTS: &[&str] = &["topics"];
 
 /// Путь запроса токена (`/public/auth/`): через исполнитель его вызывать нельзя, токен
 /// получает только [`crate::access::KeyTokens`].
@@ -41,6 +48,13 @@ const MAX_DECODE_ROUNDS: usize = 3;
 /// - ни один сегмент ни в исходном, ни в раскодированном виде не равен `.` или `..`,
 ///   а раскодированный сегмент не содержит `.`/`..` между `/` или `\` и управляющих символов.
 pub fn validate_relative_path(path: &str) -> Result<(), ApiError> {
+    validate_service_path(ApiService::PublicApi, path)
+}
+
+/// Как [`validate_relative_path`], но для сервиса `service`: у Push API путь задаётся после
+/// префикса проекта и начинается с `/messages:send` ([`ApiService::Push`]) или
+/// `/topics/` ([`ApiService::PushTopics`]); остальные требования те же.
+pub fn validate_service_path(service: ApiService, path: &str) -> Result<(), ApiError> {
     let invalid = |reason: &str| {
         Err(ApiError::InvalidPath(format!(
             "{reason}: `{}`",
@@ -66,9 +80,23 @@ pub fn validate_relative_path(path: &str) -> Result<(), ApiError> {
     }
 
     let segments: Vec<&str> = path[1..].split('/').collect();
-    let root_ok = segments.len() >= 2 && segments[0] == API_ROOT && !segments[1].is_empty();
-    if !root_ok {
-        return invalid("путь должен начинаться с `/public/` и указывать ресурс");
+    match service {
+        ApiService::PublicApi => {
+            let root_ok = segments.len() >= 2 && segments[0] == API_ROOT && !segments[1].is_empty();
+            if !root_ok {
+                return invalid("путь должен начинаться с `/public/` и указывать ресурс");
+            }
+        }
+        ApiService::Push | ApiService::PushTopics => {
+            let roots = if service == ApiService::Push {
+                PUSH_ROOTS
+            } else {
+                PUSH_TOPICS_ROOTS
+            };
+            if !roots.contains(&segments[0]) {
+                return invalid("путь не относится к Push API");
+            }
+        }
     }
     let decoded = |segment: &str| {
         percent_decode_str(segment)
@@ -104,7 +132,20 @@ pub fn validate_relative_path(path: &str) -> Result<(), ApiError> {
 /// поэтому значение не может добавить сегменты или выйти из пути. Отсутствующий или
 /// пустой параметр даёт [`ApiError::MissingPathParam`]. Значения `.` и `..` отклоняются
 /// проверкой итогового пути.
-pub fn render_path<F>(template: &str, mut lookup: F) -> Result<String, ApiError>
+pub fn render_path<F>(template: &str, lookup: F) -> Result<String, ApiError>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    render_service_path(ApiService::PublicApi, template, lookup)
+}
+
+/// Как [`render_path`], но итоговый путь проверяется для сервиса `service`
+/// ([`validate_service_path`]).
+pub fn render_service_path<F>(
+    service: ApiService,
+    template: &str,
+    mut lookup: F,
+) -> Result<String, ApiError>
 where
     F: FnMut(&str) -> Option<String>,
 {
@@ -139,8 +180,30 @@ where
         rest = &after[close + 1..];
     }
     out.push_str(rest);
-    validate_relative_path(&out)?;
+    validate_service_path(service, &out)?;
     Ok(out)
+}
+
+/// Сегмент пути, за которым идёт идентификатор пользователя (VK ID в путях доступов
+/// `/public/v1/application/{packageName}/developer/{devVkId}/...`).
+const USER_SEGMENT: &str = "developer";
+
+/// Путь запроса для логов: идентификатор пользователя после `/developer/` заменён на
+/// `{devVkId}`. Идентификаторы пользователей кабинета — персональные данные, в stderr и
+/// tracing они не пишутся.
+pub fn path_for_log(path: &str) -> String {
+    let mut masked = false;
+    path.split('/')
+        .map(|segment| {
+            if masked && !segment.is_empty() {
+                masked = false;
+                return "{devVkId}";
+            }
+            masked = segment == USER_SEGMENT;
+            segment
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// `pchar` из RFC 3986 плюс разделитель `/`; `%` проверяется отдельно.
@@ -239,6 +302,22 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    #[test]
+    fn log_paths_hide_user_ids() {
+        assert_eq!(
+            path_for_log("/public/v1/application/com.example.app/developer/743103/role/DEV"),
+            "/public/v1/application/com.example.app/developer/{devVkId}/role/DEV"
+        );
+        assert_eq!(
+            path_for_log("/public/v1/application/com.example.app/developer"),
+            "/public/v1/application/com.example.app/developer"
+        );
+        assert_eq!(
+            path_for_log("/public/v1/application/com.example.app/comment"),
+            "/public/v1/application/com.example.app/comment"
+        );
+    }
 
     #[test]
     fn accepts_valid_paths() {
@@ -394,5 +473,32 @@ mod tests {
         assert!(render_path("https://evil/{x}", |_| Some("v".into())).is_err());
         // Значение параметра не может подменить корень пути API.
         assert!(render_path("/{root}/v1/application", |_| Some("v1".into())).is_err());
+    }
+
+    #[test]
+    fn push_paths_are_checked_per_service() {
+        let topic = |name: &str| {
+            render_service_path(ApiService::PushTopics, "/topics/{topic}/publish", |_| {
+                Some(name.to_owned())
+            })
+        };
+        assert_eq!(topic("news").unwrap(), "/topics/news/publish");
+        // Значение топика — один сегмент: разделители кодируются, `..` отклоняется.
+        assert_eq!(topic("a/b").unwrap(), "/topics/a%2Fb/publish");
+        assert!(topic("..").is_err());
+        assert!(validate_service_path(ApiService::Push, "/messages:send").is_ok());
+        // Пути другого сервиса не проходят: push не уходит на пути Public API и наоборот.
+        for (service, path) in [
+            (ApiService::Push, "/topics/news/publish"),
+            (ApiService::Push, "/public/v1/application"),
+            (ApiService::PushTopics, "/messages:send"),
+            (ApiService::PublicApi, "/messages:send"),
+            (ApiService::Push, "//vkpns.rustore.ru/messages:send"),
+        ] {
+            assert!(
+                validate_service_path(service, path).is_err(),
+                "{service:?} {path}"
+            );
+        }
     }
 }

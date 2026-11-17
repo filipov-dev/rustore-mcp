@@ -11,6 +11,9 @@
 //! Файл — JSON `{"keyId", "privateKey"}` или только приватный ключ; тогда keyId задаёт
 //! `--key-id`. Содержимое файла в ответы MCP не попадает; в тексте ошибки разбора — только
 //! причина без фрагментов ключа ([`rustore_api::key::KeyError`]).
+//!
+//! Так же, с теми же проверками прав, читается файл секрета push (`--push-file`): JSON
+//! `{"projectId", "serviceToken"}` ([`load_push`]).
 
 use std::io::Read;
 use std::path::Path;
@@ -18,35 +21,53 @@ use std::path::Path;
 use anyhow::{Context as _, anyhow, bail};
 use rustore_api::ApiKey;
 use rustore_api::key::MAX_KEY_FILE_BYTES;
+use rustore_api::push::PushCredentials;
 use zeroize::Zeroizing;
+
+/// Открывает файл секрета, проверяет тип и права и читает его не больше `limit` байт.
+/// `what` — название файла в ошибках («key file», «push file»).
+fn read_secret_file(path: &Path, what: &str, limit: usize) -> anyhow::Result<Zeroizing<String>> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("cannot open the {what} {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("cannot read the {what} {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("the {what} {} is not a regular file", path.display());
+    }
+    check_permissions(path, what, &metadata)?;
+    // Лимит + 1: файл больше лимита распознаётся без чтения его целиком.
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read the {what} {}", path.display()))?;
+    if bytes.len() > limit {
+        bail!("the {what} {} is larger than {limit} bytes", path.display());
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| anyhow!("the {what} {} is not UTF-8 text", path.display()))?;
+    Ok(Zeroizing::new(text.to_owned()))
+}
+
+/// Предел файла секрета push: JSON с идентификатором проекта и сервисным токеном.
+const MAX_PUSH_FILE_BYTES: usize = 8 * 1024;
+
+/// Читает проект push и сервисный токен из файла секрета (`--push-file`).
+pub fn load_push(path: &Path) -> anyhow::Result<PushCredentials> {
+    let text = read_secret_file(path, "push file", MAX_PUSH_FILE_BYTES)?;
+    PushCredentials::from_stored(&text).map_err(|err| {
+        anyhow!(
+            "the push file {} is not valid: {err}; it must be JSON {{\"projectId\": ..., \
+             \"serviceToken\": ...}}",
+            path.display()
+        )
+    })
+}
 
 /// Читает и проверяет ключ RuStore API из файла секрета.
 pub fn load(path: &Path, key_id: Option<&str>) -> anyhow::Result<ApiKey> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("cannot open the key file {}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("cannot read the key file {}", path.display()))?;
-    if !metadata.is_file() {
-        bail!("the key file {} is not a regular file", path.display());
-    }
-    check_permissions(path, &metadata)?;
-    // Лимит + 1: файл больше лимита распознаётся без чтения его целиком.
-    let limit = MAX_KEY_FILE_BYTES as u64 + 1;
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(limit)
-        .read_to_end(&mut bytes)
-        .with_context(|| format!("cannot read the key file {}", path.display()))?;
-    if bytes.len() > MAX_KEY_FILE_BYTES {
-        bail!(
-            "the key file {} is larger than {MAX_KEY_FILE_BYTES} bytes: it is not a RuStore API \
-             key",
-            path.display()
-        );
-    }
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| anyhow!("the key file {} is not UTF-8 text", path.display()))?;
-    match ApiKey::parse_key_file(text, key_id) {
+    let text = read_secret_file(path, "key file", MAX_KEY_FILE_BYTES)?;
+    match ApiKey::parse_key_file(&text, key_id) {
         Ok(Some(key)) => Ok(key),
         Ok(None) => bail!(
             "the key file {} holds only the private key: pass its key ID with --key-id",
@@ -60,13 +81,13 @@ pub fn load(path: &Path, key_id: Option<&str>) -> anyhow::Result<ApiKey> {
 }
 
 #[cfg(unix)]
-fn check_permissions(path: &Path, metadata: &std::fs::Metadata) -> anyhow::Result<()> {
+fn check_permissions(path: &Path, what: &str, metadata: &std::fs::Metadata) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let mode = metadata.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
         bail!(
-            "the key file {} is accessible by other users (mode {mode:04o}): allow access \
+            "the {what} {} is accessible by other users (mode {mode:04o}): allow access \
              only for its owner (chmod 600, or mode 0400 for a Docker secret)",
             path.display()
         );
@@ -78,10 +99,11 @@ fn check_permissions(path: &Path, metadata: &std::fs::Metadata) -> anyhow::Resul
 /// секретов Docker и Kubernetes — механизм Linux: на других системах ключ берётся из
 /// системного хранилища.
 #[cfg(not(unix))]
-fn check_permissions(path: &Path, _metadata: &std::fs::Metadata) -> anyhow::Result<()> {
+fn check_permissions(path: &Path, what: &str, _metadata: &std::fs::Metadata) -> anyhow::Result<()> {
     bail!(
-        "--key-file {} is supported only on Unix (Docker and Kubernetes secrets); store the key \
-         in the system keychain with `rustore-mcp auth login` and pass --profile instead",
+        "the {what} {} is supported only on Unix (Docker and Kubernetes secrets); store the \
+         credentials in the system keychain with `rustore-mcp auth login` (or `auth push \
+         login`) and pass --profile instead",
         path.display()
     )
 }
@@ -159,6 +181,7 @@ mod tests {
         );
         let err = load(&path, None).unwrap_err().to_string();
         assert!(err.contains("larger than"), "{err}");
+        assert!(err.contains("key file"), "{err}");
 
         // Ошибка разбора не повторяет содержимое файла.
         let broken = r#"{"keyId": "id-1", "privateKey": "AAAAsecretish"}"#;
@@ -166,5 +189,26 @@ mod tests {
         let err = format!("{:#}", load(&path, None).unwrap_err());
         assert!(err.contains("not a valid RuStore API key"), "{err}");
         assert!(!err.contains("AAAAsecretish"), "{err}");
+    }
+
+    #[test]
+    fn reads_push_files_like_key_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = "push-service-token-abcdef0123456789";
+        let json =
+            serde_json::json!({"projectId": "myproject-b5ae1", "serviceToken": token}).to_string();
+        let path = write(dir.path(), "push", &json, 0o400);
+        assert_eq!(load_push(&path).unwrap().project_id(), "myproject-b5ae1");
+
+        let open = write(dir.path(), "push-open", &json, 0o644);
+        let err = load_push(&open).unwrap_err().to_string();
+        assert!(err.contains("push file"), "{err}");
+        assert!(err.contains("accessible by other users"), "{err}");
+
+        // Только токен без JSON — ошибка без значения токена.
+        let bare = write(dir.path(), "push-bare", token, 0o600);
+        let err = format!("{:#}", load_push(&bare).unwrap_err());
+        assert!(err.contains("projectId"), "{err}");
+        assert!(!err.contains(token), "{err}");
     }
 }

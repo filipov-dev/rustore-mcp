@@ -22,6 +22,12 @@
 Расхождения справочника с реальным API и то, что из HTML надёжно не извлекается,
 исправляются исключениями в разделе «исключения» ниже (OPERATION_NAMES,
 ACCESS_RULES, PARAM_OVERRIDES и соседние таблицы), а не правкой JSON.
+
+Push API (отправка push-уведомлений, другой хост и другой секрет) описан не в
+справочнике RuStore API, а в документации SDK push-уведомлений, без таблиц
+«Параметры взаимодействия». Его операции задаёт раздел «Push API» ниже (PUSH_PATHS):
+сборка, в том числе с --offline, страниц push не скачивает. С --check страницы push
+скачиваются (или берутся из --cache) и сверяются с ключевыми фактами (PUSH_FACTS).
 """
 
 from __future__ import annotations
@@ -72,6 +78,13 @@ TAGS = [
     ("subscriptions", "Подписки", "Данные подписок, подтверждение и отмена подписок."),
     ("catalog", "Продуктовый каталог", "Продукты и подписки из продуктового каталога приложения."),
     ("access", "Доступы", "Доступы пользователей к приложению."),
+    (
+        "push",
+        "Push-уведомления",
+        "Отправка push-уведомлений пользователям приложения: на токен устройства и по топикам. "
+        "Другой хост (vkpns.rustore.ru, vkpns-topics.rustore.ru) и другой секрет — сервисный "
+        "токен проекта push.",
+    ),
 ]
 TAG_NAME = {key: name for key, name, _ in TAGS}
 
@@ -132,6 +145,10 @@ OPERATION_NAMES: dict[tuple[str, str], str] = {
     ("GET", "/public/v1/application/{packageName}/developer"): "list_app_access",
     ("PUT", "/public/v1/application/{packageName}/developer/{devVkId}/role/{roleName}"): "grant_app_access",
     ("DELETE", "/public/v1/application/{packageName}/developer/{devVkId}/role/{roleName}"): "revoke_app_access",
+    # Пакетное управление ролями: три метода по одному пути на одной странице.
+    ("GET", "/public/v1/developer/roles"): "list_developer_roles",
+    ("PUT", "/public/v1/developer/roles"): "grant_developer_roles",
+    ("DELETE", "/public/v1/developer/roles"): "revoke_developer_roles",
     # Продуктовый каталог.
     ("GET", "/public/applications/{appId}/catalog/products"): "list_catalog_products",
     ("GET", "/public/applications/{appId}/catalog/subscriptions"): "list_catalog_subscriptions",
@@ -194,6 +211,7 @@ ACCESS_RULES: list[tuple[str, str, str, str]] = [
     ("*", r"/subscriptions?/.+:(acknowledge|cancel)$", "destructive", "подтверждение или отмена подписки"),
     # Доступы пользователей к приложению: выдача и изменение роли.
     ("PUT", r"/developer/\{devVkId\}/role/", "destructive", "выдача доступа"),
+    ("PUT", r"/developer/roles$", "destructive", "пакетная выдача роли"),
     # Отправка черновика на модерацию: после одобрения версия может опубликоваться сама
     # (тип публикации INSTANTLY или DELAYED).
     ("POST", r"/version/\{versionId\}/commit$", "destructive", "отправка на модерацию"),
@@ -219,6 +237,14 @@ DEFAULT_ACCESS = {"GET": "read", "DELETE": "destructive", "POST": "write", "PUT"
 # operationId -> правки параметров: {имя: {поле: значение}}. Поле «in» переносит параметр,
 # «required», «schema» и «description» заменяют разобранное значение.
 PARAM_OVERRIDES: dict[str, dict[str, dict]] = {
+    # Пакетное управление ролями: список приложений — одна строка через запятую, как в
+    # примере справочника (`appId=101,202`), а не повтор параметра.
+    "list_developer_roles": {
+        "appId": {
+            "schema": {"type": "string"},
+            "description": "Идентификаторы приложений (appId) через запятую, до 50; без параметра — все приложения, доступные ключу.",
+        },
+    },
     # В списке значений справочника `RELEАSE` написан с кириллической «А».
     "list_versions": {
         "filterTestingType": {
@@ -226,6 +252,33 @@ PARAM_OVERRIDES: dict[str, dict[str, dict]] = {
             "description": (
                 "Тип версии: `ALL` — релизные и альфа-версии, `RELEASE` (по умолчанию) — только "
                 "опубликованные на пользователей, `ALPHA` — только версии альфа-тестирования."
+            ),
+        },
+    },
+    # Справочник перечисляет статусы заглавными, но API принимает только строчные, как в
+    # примере (`created`): на `CONFIRMED` отвечает 400 «Incorrect parameter invoiceStatuses».
+    # Несколько статусов передаются повтором ключа. Проверено на настоящем кабинете.
+    "list_payments_by_date": {
+        "invoiceStatuses": {
+            "schema": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "created", "executed", "confirmed", "cancelled", "rejected",
+                        "expired", "paid", "reversed", "refunded",
+                    ],
+                },
+            },
+            "description": (
+                "Статусы платежей, которые должны входить в список, строчными буквами; "
+                "несколько статусов — повтором параметра. `created` — создан; `executed` — "
+                "запущен процесс оплаты; `confirmed` — финальный статус успешного платежа, "
+                "денежные средства списаны с покупателя; `cancelled` — отменён пользователем "
+                "до запуска оплаты; `rejected` — отказ при платеже; `expired` — истекло время "
+                "на оплату; `paid` — для потребляемых товаров средства захолдированы, покупка "
+                "ждёт подтверждения разработчиком; `reversed` — холд отменён, деньги возвращены "
+                "покупателю; `refunded` — средства по счёту возвращены покупателю."
             ),
         },
     },
@@ -278,6 +331,331 @@ MULTIPART_FIELDS: dict[str, dict] = {}
 
 # operationId, у которых успешный ответ — файл (application/octet-stream), а не конверт JSON.
 BINARY_RESPONSES: set[str] = set()
+
+
+# ---------- Push API (дополнение) ----------
+
+# Push API — отдельный сервис RuStore: свои хосты, свой секрет (сервисный токен проекта push
+# из консоли RuStore: приложение → Push-уведомления → Проекты) в `Authorization: Bearer`,
+# свой формат ответов (без конверта Envelope). Описан в документации SDK push-уведомлений,
+# а не в справочнике RuStore API, и не таблицами, поэтому операции заданы здесь явно, а
+# страницы push при обычной сборке не скачиваются. Хосты push после перехода Public API на
+# домены с суффиксом -m не менялись (проверено 2026-11-17).
+#
+# Идентификатор проекта — часть адреса сервиса (`servers` операции с переменной
+# `project_id`), а не параметр операции: его подставляет исполнитель из учётных данных push
+# профиля, агент его не передаёт. Генератор узнаёт сервис по адресу (build/generate.rs,
+# SERVICES).
+PUSH_DOCS_SEND = "/help/sdk/push-notifications/send-push-notifications"
+PUSH_DOCS_TOPICS = "/help/sdk/push-notifications/topic-notifications"
+PUSH_SERVER = "https://vkpns.rustore.ru/v1/projects/{project_id}"
+PUSH_TOPICS_SERVER = "https://vkpns-topics.rustore.ru/v1/projects/{project_id}"
+# Максимальный объём сообщения («Максимальный объем сообщения 4096 байт»). Исполнитель
+# проверяет его до запроса (компактный JSON поля `message`).
+PUSH_MAX_MESSAGE_BYTES = 4096
+
+# Факты со страниц push, на которых держатся операции: --check ищет каждую строку в тексте
+# страницы (без пробелов) и сообщает о пропавших как о расхождении.
+PUSH_FACTS: dict[str, list[str]] = {
+    PUSH_DOCS_SEND: [
+        "https://vkpns.rustore.ru/v1/projects/$project_id/messages:send",
+        "Authorization: Bearer",
+        f"Максимальный объем сообщения {PUSH_MAX_MESSAGE_BYTES} байт",
+        "PERMISSION_DENIED",
+        "NOT_FOUND",
+    ],
+    PUSH_DOCS_TOPICS: [
+        "https://vkpns-topics.rustore.ru/v1/projects/{project_id}/topics/{topic}/batch_subscribe",
+        "https://vkpns-topics.rustore.ru/v1/projects/{project_id}/topics/{topic}/batch_unsubscribe",
+        "/topics/hello/publish",
+        "push_tokens",
+    ],
+}
+
+
+def push_server(url: str) -> list[dict]:
+    return [
+        {
+            "url": url,
+            "variables": {
+                "project_id": {
+                    "default": "project_id",
+                    "description": "Идентификатор проекта push из учётных данных push профиля; подставляет сервер.",
+                }
+            },
+        }
+    ]
+
+
+def push_ref(name: str) -> dict:
+    return {"$ref": f"#/components/schemas/{name}"}
+
+
+PUSH_SCHEMAS: dict[str, dict] = {
+    "PushNotification": {
+        "type": "object",
+        "description": "Базовый шаблон уведомления для всех платформ.",
+        "properties": {
+            "title": {"type": "string", "description": "Заголовок уведомления. Без заголовка SDK не показывает уведомление."},
+            "body": {"type": "string", "description": "Текст уведомления."},
+            "image": {"type": "string", "description": "URL картинки уведомления."},
+        },
+        "additionalProperties": False,
+    },
+    "PushAndroidNotification": {
+        "type": "object",
+        "description": "Уведомление для Android; поля перекрывают message.notification.",
+        "properties": {
+            "title": {"type": "string", "description": "Заголовок уведомления."},
+            "body": {"type": "string", "description": "Текст уведомления."},
+            "icon": {"type": "string", "description": "Значок уведомления."},
+            "color": {"type": "string", "description": "Цвет значка в формате `#rrggbb`."},
+            "image": {"type": "string", "description": "URL картинки уведомления."},
+            "channel_id": {"type": "string", "description": "Идентификатор канала уведомлений."},
+            "click_action": {"type": "string", "description": "Действие по нажатию: intent action или deep link."},
+            "click_action_type": {
+                "type": "integer",
+                "enum": [0, 1],
+                "description": "Тип click_action: 0 — intent action (по умолчанию), 1 — deep link (RuStore 1.39.0 и новее).",
+            },
+        },
+        "additionalProperties": False,
+    },
+    "PushAndroid": {
+        "type": "object",
+        "description": "Параметры для Android.",
+        "properties": {
+            "ttl": {
+                "type": "string",
+                "description": "Сколько хранить push, если устройство недоступно: длительность в секундах с суффиксом `s`, например `3.5s`. Без ttl или 0 — 4 недели.",
+            },
+            "notification": push_ref("PushAndroidNotification"),
+        },
+        "additionalProperties": False,
+    },
+    "PushData": {
+        "type": "object",
+        "description": "Данные для приложения: пары «ключ — строка». С непустым data секции notification и android можно не передавать.",
+        "additionalProperties": {"type": "string"},
+    },
+    "PushMessage": {
+        "type": "object",
+        "description": (
+            f"Push-уведомление на одно устройство. Нужен data или notification (или android.notification). "
+            f"Объём message — не больше {PUSH_MAX_MESSAGE_BYTES} байт, сервер проверяет его до отправки."
+        ),
+        "properties": {
+            "token": {"type": "string", "description": "Push-токен устройства, полученный приложением через SDK."},
+            "data": push_ref("PushData"),
+            "notification": push_ref("PushNotification"),
+            "android": push_ref("PushAndroid"),
+        },
+        "required": ["token"],
+        "additionalProperties": False,
+    },
+    "PushTopicMessage": {
+        "type": "object",
+        "description": (
+            f"Push-уведомление всем устройствам, подписанным на топик. Нужен data или notification. "
+            f"Объём message — не больше {PUSH_MAX_MESSAGE_BYTES} байт, сервер проверяет его до отправки."
+        ),
+        "properties": {
+            "data": push_ref("PushData"),
+            "notification": push_ref("PushNotification"),
+            "android": push_ref("PushAndroid"),
+        },
+        "additionalProperties": False,
+    },
+    "PushError": {
+        "type": "object",
+        "description": "Ошибка Push API: HTTP-статус совпадает с error.code.",
+        "properties": {
+            "error": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "integer", "description": "HTTP-статус."},
+                    "message": {"type": "string", "description": "Подробности."},
+                    "status": {
+                        "type": "string",
+                        "description": "INVALID_ARGUMENT — неверные параметры, INTERNAL — внутренняя ошибка, TOO_MANY_REQUESTS — превышен лимит отправки, PERMISSION_DENIED — неверный сервисный токен, NOT_FOUND — неверный или устаревший push-токен устройства.",
+                    },
+                },
+            }
+        },
+    },
+    "PushTopicError": {
+        "type": "object",
+        "description": "Ошибка API топиков.",
+        "properties": {
+            "code": {"type": "integer", "description": "Код ошибки, например 2000 (BAD_REQUEST) или 1001 (FORBIDDEN)."},
+            "status": {"type": "string", "description": "Статус, например BAD_REQUEST или FORBIDDEN."},
+            "message": {"type": "string", "description": "Подробности, например «s2s token invalid»."},
+        },
+    },
+    "PushTopicTokens": {
+        "type": "object",
+        "properties": {
+            "push_tokens": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "description": "Push-токены устройств.",
+            }
+        },
+        "required": ["push_tokens"],
+        "additionalProperties": False,
+    },
+    "PushTopicResult": {
+        "type": "object",
+        "description": "Результат подписки или отписки: при ошибках по части токенов — HTTP 200 и список errors.",
+        "properties": {
+            "message": {"type": "string", "description": "`success` или число ошибок, например «1 error(s)»."},
+            "errors": {
+                "type": "array",
+                "description": "Ошибки по токенам.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "push_token": {"type": "string", "description": "Push-токен устройства (сервер скрывает его в ответе)."},
+                        "error": push_ref("PushTopicError"),
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def push_json_body(schema: dict) -> dict:
+    return {"required": True, "content": {"application/json": {"schema": schema}}}
+
+
+def push_responses(ok: dict, error: str) -> dict:
+    return {
+        "200": {"description": "Успешный ответ.", "content": {"application/json": {"schema": ok}}},
+        "default": {"description": "Ошибка.", "content": {"application/json": {"schema": push_ref(error)}}},
+    }
+
+
+_PUSH_TOPIC_PARAM = {
+    "name": "topic",
+    "in": "path",
+    "required": True,
+    "description": "Имя топика в проекте push.",
+    "schema": {"type": "string"},
+}
+
+# Путь (после префикса проекта в servers) -> метод -> операция. Уровни доступа заданы явно:
+# отправка — уровень удаления (уведомления приходят живым людям), подписка и отписка
+# токенов на топик — запись (никому ничего не отправляют).
+PUSH_PATHS: dict[str, dict] = {
+    "/messages:send": {
+        "post": {
+            "operationId": "send_push_notification",
+            "summary": "Отправка push-уведомления на устройство",
+            "description": (
+                "Отправляет push-уведомление на одно устройство по его push-токену. Уведомление "
+                "сразу приходит пользователю: проверьте получателя и текст. Сервер подставляет "
+                "проект и сервисный токен push из профиля. При успехе ответ — пустой объект. "
+                "Ошибки: PERMISSION_DENIED — неверный сервисный токен, NOT_FOUND — неверный или "
+                "устаревший push-токен, INVALID_ARGUMENT — неверные параметры, "
+                "TOO_MANY_REQUESTS — превышен лимит отправки."
+            ),
+            "tags": [TAG_NAME["push"]],
+            "externalDocs": {"url": DOCS_HOST + PUSH_DOCS_SEND},
+            "servers": push_server(PUSH_SERVER),
+            "security": [{"PushServiceToken": []}],
+            "x-access-level": "destructive",
+            "requestBody": push_json_body(
+                {
+                    "type": "object",
+                    "properties": {"message": push_ref("PushMessage")},
+                    "required": ["message"],
+                    "additionalProperties": False,
+                }
+            ),
+            "responses": push_responses({"type": "object", "description": "Пустой объект."}, "PushError"),
+        }
+    },
+    "/topics/{topic}/publish": {
+        "post": {
+            "operationId": "send_push_to_topic",
+            "summary": "Отправка push-уведомления в топик",
+            "description": (
+                "Отправляет push-уведомление всем устройствам, подписанным на топик. Уведомление "
+                "сразу приходит всем подписчикам: проверьте топик и текст. Сервер подставляет "
+                "проект и сервисный токен push из профиля."
+            ),
+            "tags": [TAG_NAME["push"]],
+            "externalDocs": {"url": DOCS_HOST + PUSH_DOCS_TOPICS},
+            "servers": push_server(PUSH_TOPICS_SERVER),
+            "security": [{"PushServiceToken": []}],
+            "x-access-level": "destructive",
+            "parameters": [_PUSH_TOPIC_PARAM],
+            "requestBody": push_json_body(
+                {
+                    "type": "object",
+                    "properties": {"message": push_ref("PushTopicMessage")},
+                    "required": ["message"],
+                    "additionalProperties": False,
+                }
+            ),
+            "responses": push_responses(
+                {
+                    "type": "object",
+                    "properties": {"message": {"type": "string", "description": "Сообщение об успешной отправке."}},
+                },
+                "PushTopicError",
+            ),
+        }
+    },
+    "/topics/{topic}/batch_subscribe": {
+        "post": {
+            "operationId": "subscribe_to_push_topic",
+            "summary": "Подписка устройств на push-уведомления по топику",
+            "description": (
+                "Подписывает push-токены устройств на топик: следующие отправки в топик придут и на "
+                "эти устройства. Сама подписка ничего не отправляет. При ошибках по части токенов "
+                "ответ — HTTP 200 со списком errors."
+            ),
+            "tags": [TAG_NAME["push"]],
+            "externalDocs": {"url": DOCS_HOST + PUSH_DOCS_TOPICS},
+            "servers": push_server(PUSH_TOPICS_SERVER),
+            "security": [{"PushServiceToken": []}],
+            "x-access-level": "write",
+            "parameters": [_PUSH_TOPIC_PARAM],
+            "requestBody": push_json_body(push_ref("PushTopicTokens")),
+            "responses": push_responses(push_ref("PushTopicResult"), "PushTopicError"),
+        }
+    },
+    "/topics/{topic}/batch_unsubscribe": {
+        "post": {
+            "operationId": "unsubscribe_from_push_topic",
+            "summary": "Отписка устройств от push-уведомлений по топику",
+            "description": (
+                "Отписывает push-токены устройств от топика. При ошибках по части токенов ответ — "
+                "HTTP 200 со списком errors."
+            ),
+            "tags": [TAG_NAME["push"]],
+            "externalDocs": {"url": DOCS_HOST + PUSH_DOCS_TOPICS},
+            "servers": push_server(PUSH_TOPICS_SERVER),
+            "security": [{"PushServiceToken": []}],
+            "x-access-level": "write",
+            "parameters": [_PUSH_TOPIC_PARAM],
+            "requestBody": push_json_body(push_ref("PushTopicTokens")),
+            "responses": push_responses(push_ref("PushTopicResult"), "PushTopicError"),
+        }
+    },
+}
+
+PUSH_SECURITY_SCHEME = {
+    "type": "http",
+    "scheme": "bearer",
+    "description": (
+        "Сервисный токен проекта push (консоль RuStore: приложение → Push-уведомления → Проекты). "
+        "Уходит только на хосты push, не на public-api-m.rustore.ru."
+    ),
+}
 
 
 # ---------- загрузка ----------
@@ -623,6 +1001,27 @@ def endpoints(bs: list[tuple]) -> list[tuple[str, str, str, str]]:
                 out.append((method, path, query, caption))
                 method = None
     return out
+
+
+def method_sections(bs: list[tuple]) -> list[list[tuple]]:
+    """Страница с несколькими методами («Пакетное управление ролями»): у каждого метода свой
+    раздел h2 со своими «Параметрами взаимодействия». Каждый раздел возвращается как
+    отдельная страница: заголовок h1 — «<страница>: <раздел>», блоки — содержимое раздела.
+    Страница с одним таким разделом (или без них) — пустой список."""
+    title = page_title(bs)
+    parts: list[list[tuple]] = []
+    current: list[tuple] | None = None
+    for block in bs:
+        if block[0] == "h" and block[1] == 2:
+            heading = re.sub(r"\s*\((GET|POST|PUT|PATCH|DELETE)\)\s*$", "", block[2]).strip()
+            current = [("h", 1, f"{title}: {heading}")]
+            parts.append(current)
+        elif block[0] == "h" and block[1] < 2:
+            current = None
+        elif current is not None:
+            current.append(block)
+    parts = [part for part in parts if any(is_heading(b, INTERACTION) for b in part)]
+    return parts if len(parts) > 1 else []
 
 
 def before_interaction(bs: list[tuple]) -> list[tuple]:
@@ -1104,14 +1503,20 @@ def build(pages: dict[str, str]) -> tuple[dict, list[str]]:
                 report.append(f"{name}: на странице не найден метод и адрес, страница пропущена")
             continue
         url = DOCS_HOST + doc_path
-        for endpoint in found:
+        sections = method_sections(bs)
+        targets = (
+            [(part, endpoints(section(part, INTERACTION))) for part in sections]
+            if sections
+            else [(bs, found)]
+        )
+        for part, endpoint in ((part, e) for part, part_found in targets for e in part_found):
             method, raw_path, _, caption = endpoint
             key = (method, raw_path.rstrip("/"))
             if key in EXCLUDED_OPERATIONS:
                 report.append(f"{name}: {method} {raw_path} пропущен: {EXCLUDED_OPERATIONS[key]}")
                 continue
             sandbox = "/sandbox/" in raw_path
-            method_l, path, op = build_operation(name, url, bs, endpoint, sandbox, report)
+            method_l, path, op = build_operation(name, url, part, endpoint, sandbox, report)
             item = paths.setdefault(path, {})
             if method_l in item:
                 report.append(f"{name}: {method} {path} уже описан на {item[method_l]['externalDocs']['url']}, повтор пропущен")
@@ -1134,11 +1539,13 @@ def build(pages: dict[str, str]) -> tuple[dict, list[str]]:
                 "токен доступа передаётся в заголовке Public-Token."
             ),
             "x-source-pages": source_pages,
+            # Страницы документации SDK, по которым описаны операции Push API (PUSH_PATHS).
+            "x-push-pages": [PUSH_DOCS_SEND, PUSH_DOCS_TOPICS],
         },
         "servers": [{"url": API_SERVER}],
         "security": [{"PublicToken": []}],
         "tags": [{"name": name, "description": description} for _, name, description in TAGS],
-        "paths": dict(sorted(paths.items())),
+        "paths": dict(sorted({**paths, **PUSH_PATHS}.items())),
         "components": {
             "securitySchemes": {
                 "PublicToken": {
@@ -1147,6 +1554,7 @@ def build(pages: dict[str, str]) -> tuple[dict, list[str]]:
                     "name": "Public-Token",
                     "description": "Токен доступа (JWE) из POST /public/auth/ по ключу RuStore API. Живёт 900 секунд.",
                 },
+                "PushServiceToken": PUSH_SECURITY_SCHEME,
             },
             "schemas": {
                 "Envelope": {
@@ -1160,6 +1568,7 @@ def build(pages: dict[str, str]) -> tuple[dict, list[str]]:
                     },
                     "required": ["code"],
                 },
+                **PUSH_SCHEMAS,
             },
             "responses": {
                 "Error": {
@@ -1295,6 +1704,37 @@ def drift(old: dict, new: dict) -> list[str]:
     return lines
 
 
+def push_cache_name(path: str) -> str:
+    return "push__" + path.rstrip("/").rsplit("/", 1)[-1] + ".html"
+
+
+def push_drift(cache: str, offline: bool, delay: float) -> list[str]:
+    """Сверяет страницы push (PUSH_FACTS) с фактами, на которых держатся операции Push API.
+
+    Страницы скачиваются в кеш, с --offline берутся из него; если их там нет, проверка
+    пропускается с пометкой в stderr: для сборки спецификации они не нужны.
+    """
+    lines: list[str] = []
+    for path, facts in PUSH_FACTS.items():
+        file = os.path.join(cache, push_cache_name(path))
+        if offline:
+            if not os.path.exists(file):
+                print(f"{path}: страницы нет в кеше {cache}, проверка Push API пропущена", file=sys.stderr)
+                continue
+        else:
+            text = fetch(path, delay)
+            with open(file, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        with open(file, encoding="utf-8") as fh:
+            page = squash(text_of(article_of(fh.read()), code_marks=False))
+        for fact in facts:
+            if squash(fact) not in page:
+                lines.append(f"  {path}: не найдено «{fact}»")
+    if lines:
+        lines.insert(0, f"Страницы Push API расходятся с PUSH_FACTS ({len(lines)}):")
+    return lines
+
+
 def dump(spec: dict, path: str) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(spec, fh, ensure_ascii=False, indent=2)
@@ -1350,6 +1790,11 @@ def main() -> int:
             print(f"не удалось прочитать {args.out}: {err}", file=sys.stderr)
             return EXIT_ERROR
         lines = drift(current, spec)
+        try:
+            lines += push_drift(cache, args.offline, args.delay)
+        except (OSError, SourceError) as err:
+            print(f"ошибка загрузки страниц Push API: {err}", file=sys.stderr)
+            return EXIT_ERROR
         print(
             f"Справочник: страниц {len(pages)}, операций {len(spec_ops(spec))}; "
             f"в спецификации: страниц {len(current.get('info', {}).get('x-source-pages', []))}, "

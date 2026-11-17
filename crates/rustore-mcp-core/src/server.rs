@@ -13,17 +13,22 @@
 //! и клиент получает `notifications/tools/list_changed`: в сессии с `initialize` — сразу после
 //! вызова, в протоколе 2026-07-28 — через подписку `subscriptions/listen`. Клоны сервера делят
 //! сессию; транспорт с несколькими сессиями создаёт их через [`RuStoreServer::new_session`].
+//!
+//! Подсказки MCP (`prompts/list`, `prompts/get`) — из [`crate::prompts`], по уровню доступа
+//! сервера. Если клиент передал `progressToken`, составной инструмент получает получателя
+//! сообщений о ходе ([`crate::progress::Progress`]), и они уходят `notifications/progress`.
 
 use std::sync::{Arc, RwLock};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, JsonObject,
-    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig,
-    SubscriptionFilter, Tool,
+    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion,
+    ServerCapabilities, ServerConfig, SubscriptionFilter, Tool,
 };
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use rustore_api::executor::{ApiClient, ApiRequest, ApiResponse, ResponseBody};
+use rustore_api::path::path_for_log;
 use rustore_api::spec::{AccessLevel, OperationDef};
 use serde_json::Value;
 
@@ -32,9 +37,11 @@ use crate::api_request::{self, API_REQUEST_TOOL};
 use crate::api_search;
 use crate::composite::{Context, check_arguments};
 use crate::dynamic_toolsets;
-use crate::error::ToolError;
+use crate::error::{ToolError, describe_api_error_with_hint};
 use crate::files::FilePolicy;
 use crate::jq::{FILTER_INPUT_LIMIT, JqFilter, JqRunner, take_jq, takes_jq};
+use crate::progress::Progress;
+use crate::prompts::{self, PromptDef, PromptEnv};
 use crate::redact::{redact_api_error, redact_json, redact_message, redact_response};
 use crate::registry::{ToolKind, ToolRegistry, access_name};
 use crate::request::build_request;
@@ -60,6 +67,8 @@ struct Inner {
     /// Реестр при запуске; с него начинается каждая сессия.
     initial: Arc<ToolRegistry>,
     instructions: String,
+    /// Подсказки, выполнимые на уровне доступа сервера.
+    prompts: Vec<PromptDef>,
 }
 
 /// Изменяемое состояние одной MCP-сессии.
@@ -113,6 +122,7 @@ impl RuStoreServer {
         let registry = Arc::new(ToolRegistry::new(&options)?);
         let instructions = server_instructions(&options, &registry, &files);
         let context = Context::for_server(client.clone(), files.clone(), &options);
+        let prompts = prompts::available(options.max_access);
         Ok(Self {
             session: Arc::new(Session::new(registry.clone())),
             inner: Arc::new(Inner {
@@ -122,6 +132,7 @@ impl RuStoreServer {
                 context,
                 initial: registry,
                 instructions,
+                prompts,
             }),
         })
     }
@@ -151,6 +162,16 @@ impl RuStoreServer {
     /// Вызов инструмента без транспорта. Ошибки возвращаются как `isError: true`;
     /// `Err` — только для неизвестного инструмента (ошибка протокола).
     pub async fn call(&self, name: &str, args: JsonObject) -> Result<CallToolResult, ErrorData> {
+        self.call_with_progress(name, args, None).await
+    }
+
+    /// Как [`Self::call`], но составной инструмент сообщает о ходе вызова в `progress`.
+    pub async fn call_with_progress(
+        &self,
+        name: &str,
+        args: JsonObject,
+        progress: Option<Progress>,
+    ) -> Result<CallToolResult, ErrorData> {
         let registry = self.registry();
         let Some(tool) = registry.get(name) else {
             // Известный, но выключенный инструмент: агенту объясняем, какой флаг нужен.
@@ -182,7 +203,9 @@ impl RuStoreServer {
         let client = &self.inner.client;
         let result = match tool.kind {
             ToolKind::Operation(op) => self.call_operation(client, op, args).await,
-            ToolKind::Composite(index) => self.call_composite(index, &tool.tool, args).await,
+            ToolKind::Composite(index) => {
+                self.call_composite(index, &tool.tool, args, progress).await
+            }
             ToolKind::ApiRequest => self.call_api_request(client, args).await,
             ToolKind::Custom(index) => self.call_custom(client, index, args).await,
             ToolKind::ApiSearch
@@ -257,7 +280,11 @@ impl RuStoreServer {
         jq: Option<JqFilter>,
     ) -> Result<String, ToolError> {
         let request = build_request(op, &args, &self.inner.files)?;
-        tracing::debug!(tool = op.tool_name, path = %request.path, "вызов операции RuStore API");
+        tracing::debug!(
+            tool = op.tool_name,
+            path = %path_for_log(&request.path),
+            "вызов операции RuStore API"
+        );
         execute(
             client,
             request,
@@ -281,7 +308,7 @@ impl RuStoreServer {
         tracing::debug!(
             tool = API_REQUEST_TOOL,
             method = prepared.request.method.as_str(),
-            path = %prepared.request.path,
+            path = %path_for_log(&prepared.request.path),
             operation = prepared.operation.map(|op| op.tool_name),
             "произвольный запрос к RuStore API"
         );
@@ -308,6 +335,7 @@ impl RuStoreServer {
         index: usize,
         tool: &Tool,
         mut args: JsonObject,
+        progress: Option<Progress>,
     ) -> Result<String, ToolError> {
         let Some(composite) = self.inner.options.composite_tools.get(index) else {
             return Err(ToolError::new("composite tool is not available"));
@@ -315,7 +343,15 @@ impl RuStoreServer {
         let jq = take_jq(&mut args)?;
         check_arguments(&Value::Object((*tool.input_schema).clone()), &args)?;
         tracing::debug!(tool = composite.name, "составной инструмент");
-        let value = (composite.run)(&self.inner.context, args).await?;
+        let with_progress;
+        let context = match progress {
+            Some(progress) => {
+                with_progress = self.inner.context.clone().with_progress(progress);
+                &with_progress
+            }
+            None => &self.inner.context,
+        };
+        let value = (composite.run)(context, args).await?;
         finish_value(
             &self.inner.client,
             composite.name,
@@ -365,6 +401,7 @@ async fn execute(
     runner: &JqRunner,
 ) -> Result<String, ToolError> {
     let path = request.path.clone();
+    let service = request.service;
     let max = client.config().max_response_bytes;
     let result = match jq {
         Some(_) => {
@@ -376,7 +413,7 @@ async fn execute(
     };
     let mut response = result.map_err(|err| {
         let (err, redactions) = redact_api_error(&path, err);
-        let mut message = ToolError::from(err).message().to_owned();
+        let mut message = describe_api_error_with_hint(&err, service, op, &path);
         if let Some(note) = redactions.note() {
             message.push_str("\n\n");
             message.push_str(&note);
@@ -527,7 +564,7 @@ fn scrub_token_json(client: &ApiClient, value: &mut Value) {
 
 impl ServerHandler for RuStoreServer {
     fn get_info(&self) -> ServerConfig {
-        let capabilities = if self.inner.options.dynamic_toolsets {
+        let mut capabilities = if self.inner.options.dynamic_toolsets {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()
@@ -535,6 +572,9 @@ impl ServerHandler for RuStoreServer {
         } else {
             ServerCapabilities::builder().enable_tools().build()
         };
+        if !self.inner.prompts.is_empty() {
+            capabilities.prompts = Some(rmcp::model::PromptsCapability::default());
+        }
         ServerConfig::new(capabilities)
             .with_server_info(
                 Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")).with_title("RuStore"),
@@ -550,6 +590,27 @@ impl ServerHandler for RuStoreServer {
         Ok(ListToolsResult::with_all_items(self.registry().tools()))
     }
 
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListPromptsResult, ErrorData> {
+        let prompts = self.inner.prompts.iter().map(prompts::info).collect();
+        Ok(rmcp::model::ListPromptsResult::with_all_items(prompts))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: rmcp::model::GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::GetPromptResponse, ErrorData> {
+        let env = PromptEnv {
+            max_access: self.inner.options.max_access,
+            local_machine: self.inner.options.local_machine,
+        };
+        prompts::get(&self.inner.prompts, &env, request).map(Into::into)
+    }
+
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -557,7 +618,8 @@ impl ServerHandler for RuStoreServer {
     ) -> Result<CallToolResponse, ErrorData> {
         let args = request.arguments.unwrap_or_default();
         let before = self.session.generation();
-        let result = self.call(&request.name, args).await;
+        let progress = progress_sink(&context);
+        let result = self.call_with_progress(&request.name, args, progress).await;
         // В сессии с `initialize` уведомление уходит сразу; в протоколе 2026-07-28 клиент
         // получает его через подписку (`listen`), а незапрошенные уведомления отклоняет.
         if self.session.generation() != before
@@ -611,6 +673,26 @@ impl ServerHandler for RuStoreServer {
     }
 }
 
+/// Получатель сообщений о ходе вызова: есть, только если клиент передал `progressToken`.
+/// Ошибка отправки не прерывает инструмент: ход — подсказка клиенту, а не результат.
+fn progress_sink(context: &RequestContext<RoleServer>) -> Option<Progress> {
+    let token = context.meta.get_progress_token()?;
+    let peer = context.peer.clone();
+    Some(Progress::new(move |update| {
+        let peer = peer.clone();
+        let mut param = ProgressNotificationParam::new(token.clone(), update.progress)
+            .with_message(update.message);
+        if let Some(total) = update.total {
+            param = param.with_total(total);
+        }
+        Box::pin(async move {
+            if let Err(err) = peer.notify_progress(param).await {
+                tracing::debug!(error = %err, "не удалось отправить notifications/progress");
+            }
+        })
+    }))
+}
+
 /// Сессия с `initialize` (протокол до 2026-07-28): уведомления отправляются без подписки.
 fn uses_legacy_session(context: &RequestContext<RoleServer>) -> bool {
     // Версии `YYYY-MM-DD` сравниваются лексикографически так же, как по времени.
@@ -641,7 +723,8 @@ pub fn server_instructions(
              token (HTTP 401, or a token error), ask the user to run `rustore-mcp auth login \
              --profile {profile}`; if it denies access (HTTP 403), the key lacks a permission or \
              an app: ask the user to tick the needed methods and apps for the key in the RuStore \
-             console (Company > RuStore API) or to create a key with them.",
+             console (Company > RuStore API) or to create a key with them. `auth_check` shows \
+             which API sections and apps the key can use.",
             profile = options.profile.as_deref().unwrap_or("<profile>"),
         )
     } else {
@@ -651,7 +734,8 @@ pub fn server_instructions(
          key or token. Never read it from the client configuration, print it, or pass it to \
          tools, commands or files. If the RuStore API rejects the server's key (HTTP 401, or a \
          token error) or denies access (HTTP 403), ask the user to contact the operator of the \
-         server: the key is configured there."
+         server: the key is configured there; `auth_check` shows which API sections and apps \
+         the key can use."
             .to_owned()
     };
     let account = match options.profile.as_deref() {
@@ -740,14 +824,38 @@ pub fn server_instructions(
         " The composite tools of the `releases` toolset cover this flow in fewer calls: \
          `upload_build` (write) fills the draft, creating it only when the app has none, and \
          uploads the AAB or APK files; then `release_submit` (destructive) sends it to \
-         moderation; then `release_rollout` (destructive) publishes it or raises the rollout \
+         moderation; `wait_for_moderation` (read) waits for the moderation result instead of \
+         polling by hand; then `release_rollout` (destructive) publishes it or raises the rollout \
          percentage (see below)."
     } else {
         " The composite tools of the `releases` toolset cover the publication in fewer calls \
          (build uploads are not available in HTTP mode: ask the user to upload the build in \
          the RuStore console): `release_submit` (destructive) sends the draft \
-         to moderation; then `release_rollout` (destructive) publishes it or raises the \
+         to moderation; `wait_for_moderation` (read) waits for the moderation result instead \
+         of polling by hand; then `release_rollout` (destructive) publishes it or raises the \
          rollout percentage (see below)."
+    };
+    // Push: другой сервис и другой секрет. Говорим, когда набор включён или его можно
+    // включить динамически.
+    let push = if registry.is_dynamic() || enabled.iter().any(|slug| slug == "push") {
+        format!(
+            "- Push notifications (toolset `push`, off by default): `send_push_notification` \
+             sends a notification to one device by its push token, `send_push_to_topic` to \
+             every device subscribed to a topic; both reach real people at once (destructive \
+             level): confirm the recipients and the text with the user before sending. \
+             `subscribe_to_push_topic` and `unsubscribe_from_push_topic` (write) change the \
+             topic subscriptions of device tokens and send nothing. Push is another RuStore \
+             service with another secret: the push project ID and service token of the \
+             server, set with `rustore-mcp auth push login --profile {profile}`, not the \
+             RuStore API key; they are never passed in arguments. The message \
+             (`body.message`) needs `data` or a `notification` with a `title` and must be at \
+             most {limit} bytes as compact JSON; the server checks it before sending. Device \
+             push tokens are hidden in responses.\n",
+            profile = options.profile.as_deref().unwrap_or("<profile>"),
+            limit = rustore_api::push::MAX_MESSAGE_BYTES,
+        )
+    } else {
+        String::new()
     };
     let custom = if registry
         .iter()
@@ -801,6 +909,7 @@ pub fn server_instructions(
          - Sandbox: tools ending in `_sandbox` call the same payment and subscription methods \
          in the RuStore sandbox (test purchases made with test accounts); use them to check a \
          payment integration. The other payment tools work with real purchases and money.\n\
+         {push}\
          - Finding operations: `api_search` searches all RuStore API operations by words in \
          English or Russian (names, summaries, paths), including tools not enabled here, and \
          tells which flag enables them. Use it when no listed tool fits. `api_request` calls \
@@ -871,8 +980,8 @@ fn access_text(level: AccessLevel, local: bool) -> &'static str {
              screenshots) are enabled when the user starts the server with --allow-write, and \
              tools that reach users or affect money (sending a draft to moderation, publishing, \
              rollout percentage, archiving, public replies to reviews, refunds, cancellations \
-             and confirmations of purchases and subscriptions, granting and revoking access) \
-             with --allow-destructive. If a task needs them, ask the user instead of looking \
+             and confirmations of purchases and subscriptions, granting and revoking access, \
+             sending push notifications) with --allow-destructive. If a task needs them, ask the user instead of looking \
              for workarounds."
         }
         (AccessLevel::Read, false) => {
@@ -965,6 +1074,7 @@ mod tests {
             "`upload_build` (write)",
             "`release_submit` (destructive)",
             "`release_rollout` (destructive)",
+            "`wait_for_moderation` (read)",
             "`dry_run: true`",
             "cannot lower it",
         ] {

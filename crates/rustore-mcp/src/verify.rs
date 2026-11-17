@@ -77,16 +77,23 @@ impl ApiVerifier {
     }
 }
 
-impl KeyVerifier for ApiVerifier {
-    async fn check(&self, key: &ApiKey) -> anyhow::Result<CheckOutcome> {
+impl ApiVerifier {
+    /// Клиент API с ключом `key`, после пробного получения токена: так отказ в ключе
+    /// отличается от отказа в доступе к методу. Для проверки и для `auth check`.
+    pub async fn client(&self, key: &ApiKey) -> anyhow::Result<ApiClient> {
         // Клиент создаётся только при проверке: без корневых сертификатов системы HTTPS-клиент
         // не создаётся, а `--no-verify` должен работать и там.
         let tokens = KeyTokens::with_base_url(key.clone(), &self.config.base_url)?;
-        // Сначала токен: так отказ в ключе отличается от отказа в доступе к методу.
         tokens.token().await.map_err(|err| anyhow!("{err}"))?;
         let mut config = self.config.clone();
         config.tokens = Some(Arc::new(tokens));
-        let client = ApiClient::new(config)?;
+        Ok(ApiClient::new(config)?)
+    }
+}
+
+impl KeyVerifier for ApiVerifier {
+    async fn check(&self, key: &ApiKey) -> anyhow::Result<CheckOutcome> {
+        let client = self.client(key).await?;
         let mut request = ApiRequest::new(HttpMethod::Get, CHECK_PATH);
         // Одной страницы из одного приложения достаточно: число приложений — в `totalElements`.
         request.query.push(("size".into(), "1".into()));

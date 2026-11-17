@@ -160,6 +160,12 @@ pub struct ServeArgs {
     /// HTTP mode: key ID for a --key-file that holds only the private key.
     #[arg(long, value_name = "ID", requires = "key_file")]
     pub key_id: Option<String>,
+    /// HTTP mode: secret file with the push project ID and service token, JSON
+    /// {"projectId": ..., "serviceToken": ...} (Unix, mode 0600 or 0400), instead of the
+    /// push credentials of --profile in the keychain. Needed for the `push` toolset with
+    /// --key-file.
+    #[arg(long, value_name = "PATH", requires = "http")]
+    pub push_file: Option<PathBuf>,
     /// Address and port to listen on in HTTP mode [default: 127.0.0.1:8766].
     #[arg(long, value_name = "IP:PORT", requires = "http")]
     pub listen: Option<SocketAddr>,
@@ -274,6 +280,7 @@ impl Setup {
             .map_err(|err| anyhow!("cannot configure the RuStore API client: {err}"))?;
         config.timeout = Duration::from_secs(args.timeout);
         config.max_response_bytes = args.max_response_bytes;
+        config.push = load_push(store, profile_name)?;
         Ok(Self {
             profile: profile_name.to_owned(),
             options,
@@ -291,6 +298,25 @@ impl Setup {
         let client = ApiClient::new(config)
             .map_err(|err| anyhow!("cannot create the RuStore API client: {err}"))?;
         RuStoreServer::new(client, self.options, self.files).map_err(|err| anyhow!(err))
+    }
+}
+
+/// Учётные данные push профиля, если они сохранены (`auth push login`). Без них сервер
+/// работает как обычно, а инструменты набора `push` отвечают, как их настроить; испорченная
+/// запись тоже не мешает запуску.
+pub(crate) fn load_push(
+    store: &dyn KeyStore,
+    profile: &str,
+) -> anyhow::Result<Option<rustore_api::push::PushConfig>> {
+    match store.get_push(profile) {
+        Ok(credentials) => rustore_api::push::PushConfig::new(&credentials)
+            .map(Some)
+            .map_err(|err| anyhow!("cannot configure the RuStore Push API client: {err}")),
+        Err(AuthError::PushNotFound { .. }) => Ok(None),
+        Err(err) => {
+            tracing::warn!("push notifications are not available: {err}");
+            Ok(None)
+        }
     }
 }
 
@@ -416,6 +442,10 @@ pub fn status(
         )),
         Err(err) => ui.say(&format!("Key:       {err}")),
     }
+    ui.say(&format!(
+        "Push:      {}",
+        crate::cli::auth::push::describe(store, profile)?
+    ));
     let packages = if settings.packages.is_empty() {
         "-".to_owned()
     } else {
@@ -818,6 +848,29 @@ args = { packageName = "com.example.app" }
             text.contains("Custom:    2 defined, 2 registered"),
             "{text}"
         );
+    }
+
+    /// Учётные данные push профиля попадают в клиент и в `--status` (без токена); без них
+    /// сервер запускается как обычно.
+    #[test]
+    fn push_credentials_are_loaded_from_the_profile() {
+        let (_dir, repo, store) = fixture(Some(settings(false, false, &[])), true);
+        let setup = Setup::load(&parse(&["--profile", "ci"]), &store, &repo).unwrap();
+        assert!(setup.config.push.is_none());
+        let text = status_text(&["--profile", "ci"], &repo, &store);
+        assert!(text.contains("Push:      not configured"), "{text}");
+
+        let token = "push-service-token-abcdef0123456789";
+        let push = rustore_api::push::PushCredentials::new("myproject-b5ae1", token).unwrap();
+        store.set_push("ci", &push).unwrap();
+        let setup = Setup::load(&parse(&["--profile", "ci"]), &store, &repo).unwrap();
+        assert_eq!(
+            setup.config.push.as_ref().map(|p| p.project_id.as_str()),
+            Some("myproject-b5ae1")
+        );
+        let text = status_text(&["--profile", "ci", "--toolsets", "push"], &repo, &store);
+        assert!(text.contains("Push:      configured"), "{text}");
+        assert!(!text.contains(token), "{text}");
     }
 
     /// JWE-токен, который выпускает подменённый `/public/auth/`.

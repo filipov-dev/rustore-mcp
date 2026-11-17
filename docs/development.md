@@ -6,7 +6,7 @@
 | --- | --- |
 | `crates/rustore-api` | Спецификация RuStore API, генератор таблицы операций (`build.rs`, `build/`), исполнитель HTTP-запросов, ключ RuStore API и токен доступа (`src/key.rs`, `src/access.rs`), хранилище ключей (`src/auth.rs`). |
 | `crates/rustore-mcp-core` | MCP-инструменты: реестр, уровни доступа, наборы, `api_request`, `api_search`, составные инструменты (`src/composite/`), пользовательские инструменты, фильтр `jq`, вырезание учётных данных, политика файлов, инструкции сервера для агента. Не зависит от транспорта. |
-| `crates/rustore-mcp` | Бинарник: CLI (`serve`, `connect`, `auth`, `tools`) и транспорты stdio и HTTP (`src/cli/serve/http_server.rs`). |
+| `crates/rustore-mcp` | Бинарник: CLI (`serve`, `connect`, `auth`, `key exec`, `tools`) и транспорты stdio и HTTP (`src/cli/serve/http_server.rs`). |
 
 ## Сборка и проверки
 
@@ -19,7 +19,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Тесты не обращаются к реальному RuStore API (HTTP подменяется `wiremock`) и не используют системное хранилище ключей; ключи RSA генерируются в тестах, время токена — управляемые часы.
+Тесты не обращаются к реальному RuStore API (HTTP подменяется `wiremock`) и не используют системное хранилище ключей; ключи RSA генерируются в тестах, время токена — управляемые часы. Тесты `key exec` — свои для Unix (режимы файла, сигналы) и для Windows (ACL, объект задания, пакетные файлы); тесты Windows выполняются только там.
 
 Готовые сборки: macOS (universal), Linux x86_64 и aarch64 (статические, musl) и Windows x86_64 (`x86_64-pc-windows-msvc`).
 
@@ -34,7 +34,7 @@ cargo clippy --all-targets --locked --target x86_64-pc-windows-msvc -- -D warnin
 cargo test --locked --target x86_64-pc-windows-msvc
 ```
 
-Ветки кода для Windows (ключ частями в Credential Manager, запуск `claude.cmd`, сравнение файлов без inode в исполнителе) компилируются или выполняются только там, поэтому проверяйте изменения в них этими командами. С macOS и Linux `cargo check --target x86_64-pc-windows-msvc` без Windows SDK не проходит: C-код `aws-lc-sys` требует заголовков Windows.
+Ветки кода для Windows (ключ частями в Credential Manager, запуск `claude.cmd`, сравнение файлов без inode в исполнителе, ACL, объект задания и консольные сигналы `key exec`, запасные `.cmd` и `.bat`) компилируются или выполняются только там, поэтому проверяйте изменения в них этими командами. С macOS и Linux `cargo check --target x86_64-pc-windows-msvc` без Windows SDK не проходит: C-код `aws-lc-sys` требует заголовков Windows.
 
 #### Clippy для Windows с macOS и Linux
 

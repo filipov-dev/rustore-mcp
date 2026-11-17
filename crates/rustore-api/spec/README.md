@@ -43,6 +43,8 @@ python3 -I crates/rustore-api/spec/build_openapi.py --check
 
 Спецификация OpenAPI 3.1: 49 операций со 59 страниц справочника (список — `info.x-source-pages`). Сервер — `https://public-api-m.rustore.ru`, токен доступа — схема безопасности `PublicToken` (заголовок `Public-Token`); генератор операций этот заголовок не делает аргументом инструмента: его добавляет исполнитель.
 
+Кроме них в спецификации 4 операции Push API RuStore (набор `push`) — отдельного сервиса со своими хостами и учётными данными; они описаны в скрипте вручную, см. [Push API](#push-api).
+
 - Каждая операция: `operationId` в snake_case не длиннее 40 символов (это имя MCP-инструмента), один тег — раздел справочника (набор инструментов), `summary` — заголовок страницы, `description` — вводный текст страницы, `externalDocs.url` — страница справочника, `x-access-level` — уровень доступа.
 - Параметры пути и строки запроса — из таблицы «Параметры взаимодействия»; тело JSON — из строк с расположением `body` и вложенных таблиц; загрузка файлов — `multipart/form-data` с полем `file` (`format: binary`).
 - Ответы — общий конверт `Envelope` (`code`, `message`, `body`, `timestamp`); схема поля `body` — из таблиц «Параметры ответа». Выгрузка отзывов в CSV (`export_reviews_csv`) отвечает файлом (`application/octet-stream`). Ошибки — `components.responses.Error` с тем же конвертом.
@@ -66,6 +68,7 @@ python3 -I crates/rustore-api/spec/build_openapi.py --check
 | `subscriptions` | Подписки | 8 |
 | `catalog` | Продуктовый каталог | 2 |
 | `access` | Доступы | 3 |
+| `push` | Push-уведомления | 4 |
 
 Операции:
 
@@ -120,6 +123,10 @@ python3 -I crates/rustore-api/spec/build_openapi.py --check
 | `grant_app_access` | `PUT /public/v1/application/{packageName}/developer/{devVkId}/role/{roleName}` | destructive | access |
 | `list_app_access` | `GET /public/v1/application/{packageName}/developer` | read | access |
 | `revoke_app_access` | `DELETE /public/v1/application/{packageName}/developer/{devVkId}/role/{roleName}` | destructive | access |
+| `send_push_notification` | `POST /messages:send` (хост push) | destructive | push |
+| `send_push_to_topic` | `POST /topics/{topic}/publish` (хост топиков) | destructive | push |
+| `subscribe_to_push_topic` | `POST /topics/{topic}/batch_subscribe` (хост топиков) | write | push |
+| `unsubscribe_from_push_topic` | `POST /topics/{topic}/batch_unsubscribe` (хост топиков) | write | push |
 
 ## Уровни доступа
 
@@ -137,6 +144,8 @@ python3 -I crates/rustore-api/spec/build_openapi.py --check
 
 Справочник местами противоречит сам себе. Ниже — то, что замечено при сборке; спецификация следует таблицам справочника или, где таблица явно неверна, исключению в скрипте. Каждый пункт — открытый вопрос для проверки на реальном API (живых проверок в CI нет).
 
+- «Пакетное управление ролями разработчиков» описывает три метода по одному пути `/public/v1/developer/roles` (GET, PUT, DELETE), каждый в своём разделе h2 со своими «Параметрами взаимодействия». Скрипт разбирает такие разделы как отдельные страницы (`method_sections`), заголовок операции — «<страница>: <раздел>». Список `appId` у GET — одна строка через запятую, как в примере справочника. Ответы этих методов — без конверта: `{"results": [...], "nextPageToken": ...}`.
+- В «Получение списка платежей за дату» статусы `invoiceStatuses` перечислены заглавными (`CONFIRMED`), но API принимает только строчные, как в примере (`created`): на заглавные отвечает HTTP 400 «Incorrect parameter invoiceStatuses». Несколько статусов передаются повтором параметра. Проверено на реальном API; в спецификации — строчные значения (исключение в `PARAM_OVERRIDES`).
 - Параметр пути `feedbackId` в «Получение статуса ответа на отзыв» помечен необязательным; в спецификации он обязательный, как любой параметр пути.
 - `invoiceId` в «Получение данных платежа по идентификатору (v2)» помечен как параметр запроса (`query`), хотя стоит в шаблоне пути `/public/v2/invoices/{invoiceId}`; в спецификации — параметр пути.
 - В «Получение списка приложений» параметры `pagination`, `continuationToken`, `pageSize`, `appName`, `appPackage`, `orderFields`, `sortDirections` помечены `path`, но в шаблоне пути их нет; в спецификации — параметры запроса. `pageSize` описан как string, хотя это число от 1 до 1000.
@@ -159,3 +168,25 @@ python3 -I crates/rustore-api/spec/build_openapi.py --check
 - Схемы ответов построены из таблиц «Параметры ответа» и нужны агенту как справка: генератор операций и исполнитель их не проверяют. Справочник часто пишет у поля `body` тип `object`, а в примере ответа — массив.
 - Тип `number` справочника у параметров с целым примером (идентификаторы, номера страниц) записан как `integer`, у полей ответа — как `number`.
 - Значения перечислений (`enum`) взяты из списков вида «`ADMIN` — администратор» в таблицах; если справочник перечисляет не все значения, API может принять и другие.
+
+## Push API
+
+Push API RuStore — не часть RuStore Public API: у него свои хосты, свой токен и свой формат ошибок, а страницы — в разделе SDK, а не в справочнике RuStore API. Таблиц «Параметры взаимодействия» на них нет, поэтому разбор страниц к нему не применяется: операции, схемы и уровни описаны в скрипте вручную (`PUSH_PATHS`, `PUSH_SCHEMAS`) и добавляются к собранной спецификации при каждой сборке, в том числе `--offline` (страницы push в кэше для сборки не нужны).
+
+Источники, проверены 2026-11-17 (страницы операций — `info.x-push-pages`):
+
+- [Отправка push-уведомлений](https://www.rustore.ru/help/sdk/push-notifications/send-push-notifications): `POST https://vkpns.rustore.ru/v1/projects/{project_id}/messages:send`, заголовок `Authorization: Bearer <сервисный токен>`, тело `{"message": {"token", "data", "notification", "android"}}`, успех — `200` и `{}`, ошибки — `{"error": {"code", "message", "status"}}` (`INVALID_ARGUMENT`, `INTERNAL`, `TOO_MANY_REQUESTS`, `PERMISSION_DENIED`, `NOT_FOUND`), «Максимальный объем сообщения 4096 байт».
+- [Push-уведомления по топикам](https://www.rustore.ru/help/sdk/push-notifications/topic-notifications): `POST https://vkpns-topics.rustore.ru/v1/projects/{project_id}/topics/{topic}/publish`, `.../batch_subscribe` и `.../batch_unsubscribe` (тело `{"push_tokens": [...]}`); частичный успех — `200` со списком `errors` по push-токенам, ошибки — `{"code", "status", "message"}` (например `2000 BAD_REQUEST`, `1001 FORBIDDEN`).
+- [Тестирование push-уведомлений](https://www.rustore.ru/help/sdk/push-notifications/test-push-notifications): идентификатор проекта и сервисный токен — в консоли («Приложение → Push-уведомления → Проекты»), у проекта до пяти сервисных токенов.
+
+В спецификации у операций push свои `servers` с переменной `project_id` (исполнитель подставляет проект из профиля, агенту это не аргумент) и схема безопасности `PushServiceToken` (`http bearer`); генератор относит операцию к сервису по адресу сервера. Пути — относительно проекта: `/messages:send`, `/topics/{topic}/...`.
+
+`--check` дополнительно скачивает (или с `--offline` берёт из кэша, файлы `push__*.html`) страницы push и проверяет, что на них остались ключевые факты: хосты, пути, лимит 4096 байт, статусы ошибок. Пропавший факт — расхождение (код `3`); страница, которой нет в кэше при `--offline`, пропускается с пометкой в stderr.
+
+Расхождения и допущения:
+
+- Таблица параметров публикации в топик перечисляет поля сообщения на верхнем уровне тела, а пример оборачивает их в `message`; спецификация следует примеру.
+- Лимит 4096 байт назван только для отправки на устройство; сервер применяет его и к публикации в топик.
+- `validate_only` (проверка без отправки), как у похожих API, справочник не описывает: безопасного запроса для проверки токена нет.
+- Переезд на домены с суффиксом `-m` касается RuStore Public API (`public-api-m.rustore.ru`), а не хостов push.
+- Универсальный Push API (`vkpns-universal.rustore.ru`, токен в теле запроса) не описан: токен в теле плохо сочетается с вырезанием секретов, а отправку покрывает основной API.

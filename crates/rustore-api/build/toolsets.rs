@@ -14,6 +14,7 @@ pub const TOOLSET_SLUGS: &[(&str, &str)] = &[
     ("Подписки", "subscriptions"),
     ("Продуктовый каталог", "catalog"),
     ("Доступы", "access"),
+    ("Push-уведомления", "push"),
 ];
 
 /// Slug набора для тега; `None`, если тега нет в [`TOOLSET_SLUGS`].

@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use rustore_api::executor::{ApiRequest, RequestBody, validate_relative_path};
-use rustore_api::spec::{AccessLevel, HttpMethod, OperationDef, ResponseKind};
+use rustore_api::spec::{AccessLevel, ApiService, HttpMethod, OperationDef, ResponseKind};
 use serde_json::{Value, json};
 
 use crate::error::ToolError;
@@ -199,6 +199,9 @@ pub fn prepare(
         access: decision.required,
         request: ApiRequest {
             method,
+            // Только Public API: операции push вызываются своими инструментами, их пути
+            // `api_request` не принимает (проверка пути требует `/public/`).
+            service: ApiService::PublicApi,
             path,
             query,
             body,

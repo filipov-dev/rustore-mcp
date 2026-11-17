@@ -1,0 +1,139 @@
+---
+source: crates/rustore-api/tests/operations.rs
+expression: "snapshot_view(op(\"send_push_notification\"))"
+---
+{
+  "access": "Destructive",
+  "body": "Json",
+  "description": "Отправляет push-уведомление на одно устройство по его push-токену. Уведомление сразу приходит пользователю: проверьте получателя и текст. Сервер подставляет проект и сервисный токен push из профиля. При успехе ответ — пустой объект. Ошибки: PERMISSION_DENIED — неверный сервисный токен, NOT_FOUND — неверный или устаревший push-токен, INVALID_ARGUMENT — неверные параметры, TOO_MANY_REQUESTS — превышен лимит отправки.",
+  "docs_url": "https://www.rustore.ru/help/sdk/push-notifications/send-push-notifications",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "body": {
+        "additionalProperties": false,
+        "description": "JSON request body.",
+        "properties": {
+          "message": {
+            "additionalProperties": false,
+            "description": "Push-уведомление на одно устройство. Нужен data или notification (или android.notification). Объём message — не больше 4096 байт, сервер проверяет его до отправки.",
+            "properties": {
+              "android": {
+                "additionalProperties": false,
+                "description": "Параметры для Android.",
+                "properties": {
+                  "notification": {
+                    "additionalProperties": false,
+                    "description": "Уведомление для Android; поля перекрывают message.notification.",
+                    "properties": {
+                      "body": {
+                        "description": "Текст уведомления.",
+                        "type": "string"
+                      },
+                      "channel_id": {
+                        "description": "Идентификатор канала уведомлений.",
+                        "type": "string"
+                      },
+                      "click_action": {
+                        "description": "Действие по нажатию: intent action или deep link.",
+                        "type": "string"
+                      },
+                      "click_action_type": {
+                        "description": "Тип click_action: 0 — intent action (по умолчанию), 1 — deep link (RuStore 1.39.0 и новее).",
+                        "enum": [
+                          0,
+                          1
+                        ],
+                        "type": "integer"
+                      },
+                      "color": {
+                        "description": "Цвет значка в формате `#rrggbb`.",
+                        "type": "string"
+                      },
+                      "icon": {
+                        "description": "Значок уведомления.",
+                        "type": "string"
+                      },
+                      "image": {
+                        "description": "URL картинки уведомления.",
+                        "type": "string"
+                      },
+                      "title": {
+                        "description": "Заголовок уведомления.",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "ttl": {
+                    "description": "Сколько хранить push, если устройство недоступно: длительность в секундах с суффиксом `s`, например `3.5s`. Без ttl или 0 — 4 недели.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "data": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Данные для приложения: пары «ключ — строка». С непустым data секции notification и android можно не передавать.",
+                "type": "object"
+              },
+              "notification": {
+                "additionalProperties": false,
+                "description": "Базовый шаблон уведомления для всех платформ.",
+                "properties": {
+                  "body": {
+                    "description": "Текст уведомления.",
+                    "type": "string"
+                  },
+                  "image": {
+                    "description": "URL картинки уведомления.",
+                    "type": "string"
+                  },
+                  "title": {
+                    "description": "Заголовок уведомления. Без заголовка SDK не показывает уведомление.",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "token": {
+                "description": "Push-токен устройства, полученный приложением через SDK.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "required": [
+      "body"
+    ],
+    "type": "object"
+  },
+  "method": "POST",
+  "operation_id": "send_push_notification",
+  "params": [
+    {
+      "description": "JSON request body.",
+      "location": "Body",
+      "name": "body",
+      "required": true,
+      "value_type": "Object"
+    }
+  ],
+  "path": "/messages:send",
+  "response": "Json",
+  "summary": "Отправка push-уведомления на устройство",
+  "tool_name": "send_push_notification",
+  "toolset": "push"
+}

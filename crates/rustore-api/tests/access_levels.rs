@@ -2,8 +2,9 @@
 //!
 //! Уровень удаления, кроме DELETE, получают действия с последствиями для пользователей
 //! RuStore и денег: отправка на модерацию, публикация, раскатка, архивирование, ответы на
-//! отзывы, возвраты, отмены и подтверждения покупок и подписок, выдача и отзыв доступов.
-//! Изменения черновика версии — уровень записи, всё остальное — чтение. Новая операция
+//! отзывы, возвраты, отмены и подтверждения покупок и подписок, выдача и отзыв доступов,
+//! отправка push-уведомлений. Изменения черновика версии и подписка токенов устройств на
+//! топик push — уровень записи, всё остальное — чтение. Новая операция
 //! спецификации без строки в таблице — ошибка теста: её уровень нужно решить явно.
 
 use std::collections::BTreeMap;
@@ -73,6 +74,15 @@ const EXPECTED: &[(&str, AccessLevel)] = &[
     ("list_app_access", Read),
     ("grant_app_access", Destructive),
     ("revoke_app_access", Destructive),
+    ("list_developer_roles", Read),
+    ("grant_developer_roles", Destructive),
+    ("revoke_developer_roles", Destructive),
+    // Push-уведомления: отправка приходит живым людям; подписка и отписка токенов на топик
+    // никому ничего не отправляют.
+    ("send_push_notification", Destructive),
+    ("send_push_to_topic", Destructive),
+    ("subscribe_to_push_topic", Write),
+    ("unsubscribe_from_push_topic", Write),
 ];
 
 #[test]
@@ -126,6 +136,38 @@ fn money_users_and_access_changes_are_destructive() {
         };
         assert_eq!(op.access, expected, "{}", op.tool_name);
     }
+}
+
+#[test]
+fn push_sends_are_destructive_and_use_push_hosts() {
+    use rustore_api::spec::ApiService;
+
+    let push: Vec<_> = operations()
+        .iter()
+        .filter(|op| op.toolset == "push")
+        .collect();
+    assert_eq!(push.len(), 4);
+    for op in push {
+        assert!(op.service.is_push(), "{}", op.tool_name);
+        let expected = if op.tool_name.starts_with("send_") {
+            Destructive
+        } else {
+            Write
+        };
+        assert_eq!(op.access, expected, "{}", op.tool_name);
+    }
+    // Только операции набора push идут не в Public API.
+    for op in operations().iter().filter(|op| op.toolset != "push") {
+        assert_eq!(op.service, ApiService::PublicApi, "{}", op.tool_name);
+    }
+    assert_eq!(
+        find("send_push_notification").map(|op| op.service),
+        Some(ApiService::Push)
+    );
+    assert_eq!(
+        find("send_push_to_topic").map(|op| op.service),
+        Some(ApiService::PushTopics)
+    );
 }
 
 #[test]

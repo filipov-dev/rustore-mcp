@@ -38,6 +38,7 @@ fn config(base: &str) -> ClientConfig {
             default_delay: Duration::from_millis(10),
             max_delay: Duration::from_secs(5),
         },
+        push: None,
     }
 }
 
