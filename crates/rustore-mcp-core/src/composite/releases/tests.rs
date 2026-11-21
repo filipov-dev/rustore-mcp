@@ -221,7 +221,7 @@ fn tools_are_registered_by_access_level_and_files() {
         assert!(read.get(name).is_none(), "{name}");
     }
     let reason = read.unavailable_reason("upload_build").unwrap();
-    assert!(reason.contains("--allow-write"), "{reason}");
+    assert!(reason.contains("`write` access"), "{reason}");
 
     let write = registry(AccessLevel::Write, true);
     let upload = write.get("upload_build").unwrap();
@@ -231,7 +231,7 @@ fn tools_are_registered_by_access_level_and_files() {
     for name in ["release_submit", "release_rollout"] {
         assert!(write.get(name).is_none(), "{name}");
         let reason = write.unavailable_reason(name).unwrap();
-        assert!(reason.contains("--allow-destructive"), "{name}: {reason}");
+        assert!(reason.contains("`destructive` access"), "{name}: {reason}");
     }
 
     let all = registry(AccessLevel::Destructive, true);

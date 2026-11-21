@@ -96,6 +96,31 @@ impl Ui for NonInteractiveUi {
     }
 }
 
+/// Вывод в память без вопросов: для действий из TUI (`ui`), где терминал занят интерфейсом.
+/// Вопрос — ошибка, «да/нет» — отказ.
+#[derive(Debug, Default)]
+pub struct CaptureUi {
+    pub lines: Vec<String>,
+}
+
+impl Ui for CaptureUi {
+    fn say(&mut self, line: &str) {
+        self.lines.push(line.to_owned());
+    }
+
+    fn ask(&mut self, _prompt: &str) -> io::Result<String> {
+        Err(io::Error::other("questions are not available here"))
+    }
+
+    fn confirm(&mut self, _question: &str, _default: bool) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 pub mod testing {
     use std::collections::VecDeque;

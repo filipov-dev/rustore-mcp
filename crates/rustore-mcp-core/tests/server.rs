@@ -158,7 +158,11 @@ async fn read_only_server_end_to_end() {
     )
     .await;
     assert_eq!(result.is_error, Some(true));
-    assert!(text(&result).contains("--allow-write"), "{}", text(&result));
+    assert!(
+        text(&result).contains("`write` access"),
+        "{}",
+        text(&result)
+    );
 
     // Ошибка аргументов не доходит до API.
     let result = call(
@@ -747,7 +751,7 @@ async fn api_request_respects_the_access_level() {
     assert_eq!(result.is_error, Some(true));
     let message = text(&result);
     assert!(message.contains("needs write access"), "{message}");
-    assert!(message.contains("--allow-write"), "{message}");
+    assert!(message.contains("`write` access"), "{message}");
     // Удаление черновика — уровень записи операции, а не уровень метода DELETE.
     let result = call(
         &client,
@@ -773,7 +777,7 @@ async fn api_request_respects_the_access_level() {
         assert_eq!(result.is_error, Some(true));
         let message = text(&result);
         assert!(message.contains("needs destructive access"), "{message}");
-        assert!(message.contains("--allow-destructive"), "{message}");
+        assert!(message.contains("`destructive` access"), "{message}");
     }
     // Заголовки и полные URL не принимаются.
     let result = call(
@@ -811,7 +815,8 @@ async fn api_request_respects_the_access_level() {
         .iter()
         .find(|r| r["tool_name"] == "create_draft_version")
         .unwrap();
-    assert_eq!(post["enable_with"], "--allow-write --toolsets releases");
+    assert_eq!(post["enable_with"], "--toolsets releases");
+    assert_eq!(post["needs_access"], "write");
 
     let result = call(&client, "api_search", json!({"query": "rating"})).await;
     let value: Value = serde_json::from_str(&text(&result)).unwrap();
@@ -866,7 +871,7 @@ async fn api_request_writes_with_flags() {
         json!({"method": "DELETE", "path": format!("{APP}/feedback/9")}),
     )
     .await;
-    assert!(text(&result).contains("--allow-destructive"));
+    assert!(text(&result).contains("`destructive` access"));
     write.cancel().await.unwrap();
     server.await.unwrap();
 
@@ -979,7 +984,11 @@ async fn composite_tools_end_to_end() {
     // Инструмент выше уровня сервера объясняет, какой флаг нужен.
     let result = call(&client, "fake_write_summary", json!({})).await;
     assert_eq!(result.is_error, Some(true));
-    assert!(text(&result).contains("--allow-write"), "{}", text(&result));
+    assert!(
+        text(&result).contains("`write` access"),
+        "{}",
+        text(&result)
+    );
 
     client.cancel().await.unwrap();
     server.abort();

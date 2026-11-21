@@ -23,8 +23,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the MCP server over stdio, or over HTTP with --http.
+    /// Run the MCP server over stdio with the access of the profile (read-only by default),
+    /// or over HTTP with --http.
     Serve(cli::serve::ServeArgs),
+    /// Call a tool of the server from the console, with the access of the profile; without
+    /// a tool, list the tools.
+    Call(cli::call::CallCommand),
     /// Manage the RuStore API keys of profiles in the system keychain.
     #[command(subcommand)]
     Auth(cli::auth::AuthCommand),
@@ -41,6 +45,9 @@ enum Command {
     /// List and check custom tools defined in tools.toml.
     #[command(subcommand)]
     Tools(cli::tools::ToolsCommand),
+    /// Interactive view of the profiles: settings, access and its approval, registrations
+    /// in MCP clients, what the key may do in RuStore, and the tools.
+    Ui(cli::tui::UiArgs),
     /// Internal: run one `jq` filter for `serve` (JSON on stdin and stdout).
     #[command(name = "jq-worker", hide = true)]
     JqWorker,
@@ -53,11 +60,14 @@ async fn main() -> anyhow::Result<ExitCode> {
     let done = |()| ExitCode::SUCCESS;
     match Cli::parse().command {
         Command::Serve(args) => cli::serve::run(args).await.map(done),
+        // Код завершения `call` — 1, если инструмент вернул ошибку.
+        Command::Call(args) => cli::call::run(args).await,
         Command::Auth(command) => cli::auth::run(command).await.map(done),
         // Код завершения — код дочерней команды.
         Command::Key(command) => cli::key::run(command).await,
         Command::Connect(args) => cli::connect::run(args).await.map(done),
         Command::Tools(command) => cli::tools::run(command).map(done),
+        Command::Ui(args) => cli::tui::run(args).await.map(done),
         Command::JqWorker => cli::jq_worker::run().map(done),
     }
 }

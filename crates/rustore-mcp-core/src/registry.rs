@@ -151,12 +151,11 @@ impl ToolRegistry {
                     tool.name.clone(),
                     format!(
                         "custom tool `{}` is disabled: it {} data in RuStore and the server runs \
-                         with {} access. Ask the user to restart the server with {} if this is \
-                         intended",
+                         with {} access. Ask the user to {} if this is intended",
                         tool.name,
                         access_verb(op.access),
                         access_name(options.max_access),
-                        access_flag(op.access),
+                        access_hint(op.access, options.local_machine),
                     ),
                 );
             } else {
@@ -361,10 +360,10 @@ impl ToolRegistry {
         if !self.max_access.allows(op.access) {
             return Some(format!(
                 "tool `{name}` is disabled: it {} data in RuStore and the server runs with {} \
-                 access. Ask the user to restart the server with {} if this change is intended",
+                 access. Ask the user to {} if this change is intended",
                 access_verb(op.access),
                 access_name(self.max_access),
-                access_flag(op.access),
+                access_hint(op.access, self.local_files),
             ));
         }
         if !self.toolset_enabled(op.toolset) {
@@ -402,10 +401,10 @@ impl ToolRegistry {
         if !self.max_access.allows(tool.access) {
             return Some(format!(
                 "tool `{name}` is disabled: it {} data in RuStore and the server runs with {} \
-                 access. Ask the user to restart the server with {} if this change is intended",
+                 access. Ask the user to {} if this change is intended",
                 access_verb(tool.access),
                 access_name(self.max_access),
-                access_flag(tool.access),
+                access_hint(tool.access, self.local_files),
             ));
         }
         if !self.toolset_enabled(tool.toolset) {
@@ -669,12 +668,31 @@ pub fn access_name(access: AccessLevel) -> &'static str {
     }
 }
 
-/// Флаг сервера, который включает уровень доступа `access`.
+/// Флаг сервера, который включает уровень доступа `access`. Действует только в HTTP-режиме:
+/// там уровень сервера задают флаги оператора; локальному серверу (stdio) права даёт профиль.
 pub fn access_flag(access: AccessLevel) -> &'static str {
     match access {
         AccessLevel::Read => "no extra flag",
         AccessLevel::Write => "--allow-write",
         AccessLevel::Destructive => "--allow-destructive",
+    }
+}
+
+/// Что пользователь делает, чтобы включить уровень `access`. Фраза продолжает «Ask the user
+/// to …».
+///
+/// Локальный сервер (`local`, stdio): права — настройка профиля, флаги регистрации их не
+/// расширяют, а на macOS повышение ещё и одобряется Touch ID; поэтому подсказка — про
+/// `rustore-mcp ui`. HTTP-сервер: уровень задают флаги оператора при запуске.
+pub fn access_hint(access: AccessLevel, local: bool) -> String {
+    match (access, local) {
+        (AccessLevel::Read, _) => "keep the read-only access".to_owned(),
+        (level, true) => format!(
+            "allow `{}` access for the server's profile with `rustore-mcp ui` and restart the \
+             MCP client",
+            access_name(level)
+        ),
+        (level, false) => format!("restart the server with {}", access_flag(level)),
     }
 }
 
@@ -891,18 +909,37 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_reasons_name_the_flag() {
+    fn unavailable_reasons_name_the_access() {
+        // Локальный сервер: права — у профиля, подсказка про `rustore-mcp ui`.
         let read = ToolRegistry::new(&options(AccessLevel::Read, None)).unwrap();
         let reason = read.unavailable_reason("create_draft_version").unwrap();
-        assert!(reason.contains("--allow-write"), "{reason}");
+        assert!(reason.contains("`write` access"), "{reason}");
+        assert!(reason.contains("rustore-mcp ui"), "{reason}");
+        assert!(!reason.contains("--allow"), "{reason}");
         let reason = read.unavailable_reason("delete_review_answer").unwrap();
-        assert!(reason.contains("--allow-destructive"), "{reason}");
+        assert!(reason.contains("`destructive` access"), "{reason}");
         assert!(read.unavailable_reason("get_app_rating").is_none());
         assert!(read.unavailable_reason("no_such_tool").is_none());
 
         let write = ToolRegistry::new(&options(AccessLevel::Write, None)).unwrap();
         let reason = write.unavailable_reason("delete_review_answer").unwrap();
-        assert!(reason.contains("--allow-destructive") && reason.contains("write access"));
+        assert!(reason.contains("`destructive` access") && reason.contains("write access"));
+
+        // HTTP-сервер: уровень задают флаги оператора.
+        let remote = ToolRegistry::new(&ServerOptions {
+            local_machine: false,
+            ..options(AccessLevel::Read, None)
+        })
+        .unwrap();
+        let reason = remote.unavailable_reason("create_draft_version").unwrap();
+        assert!(
+            reason.contains("restart the server with --allow-write"),
+            "{reason}"
+        );
+        assert_eq!(
+            access_hint(AccessLevel::Read, true),
+            "keep the read-only access"
+        );
 
         let catalog = ToolRegistry::new(&options(AccessLevel::Read, Some(&["catalog"]))).unwrap();
         let reason = catalog.unavailable_reason("get_app_rating").unwrap();
@@ -983,10 +1020,10 @@ mod tests {
         assert!(tool.tool.input_schema["properties"].get(JQ_ARG).is_some());
         assert_eq!(read.len(), count(AccessLevel::Read, DEFAULT_TOOLSETS) + 1);
 
-        // Уровень выше разрешённого и чужой набор — не регистрируются, причина с флагом.
+        // Уровень выше разрешённого и чужой набор — не регистрируются, причина с уровнем.
         assert!(read.get("fake_write").is_none());
         let reason = read.unavailable_reason("fake_write").unwrap();
-        assert!(reason.contains("--allow-write"), "{reason}");
+        assert!(reason.contains("`write` access"), "{reason}");
         assert!(read.get("fake_catalog").is_none());
         let reason = read.unavailable_reason("fake_catalog").unwrap();
         assert!(reason.contains("toolset `catalog`"), "{reason}");

@@ -32,7 +32,9 @@ use serde_json::{Map, Value, json};
 use crate::composite::CompositeTool;
 use crate::dynamic_toolsets::ENABLE_TOOLSET_TOOL;
 use crate::error::ToolError;
-use crate::registry::{ToolRegistry, access_flag, access_name, composite_tool, uses_local_files};
+use crate::registry::{
+    ToolRegistry, access_flag, access_hint, access_name, composite_tool, uses_local_files,
+};
 use crate::toolsets::available_toolsets;
 
 /// Имя инструмента.
@@ -153,12 +155,12 @@ pub fn api_search_tool() -> Tool {
     let description = "Search all RuStore API operations, including those whose tools \
         are not enabled on this server. Each result shows the tool name, HTTP method and path, \
         access level, toolset, required arguments, the API reference page, whether the tool is \
-        registered here and, if not, which server flag enables it. Pass `tool_name` to get the \
-        full input schema of one operation.\n\n\
+        registered here and, if not, what enables it (`enable_with`, `needs_access` and \
+        `note`). Pass `tool_name` to get the full input schema of one operation.\n\n\
         If the tool is registered, call it directly. If only its toolset is disabled, enable it \
         with `enable_toolset` when the server offers that tool, or call the same method and \
         path with `api_request`, or ask the user to add the toolset. If it needs a higher \
-        access level, ask the user to restart the server with the named flag. Registered tools \
+        access level, ask the user for that access as the `note` says. Registered tools \
         and `api_request` accept an optional `jq` filter to shrink the response.\n\n\
         Access: read-only (does not call the API).";
     let mut tool = Tool::new(API_SEARCH_TOOL, description, Arc::new(schema));
@@ -592,7 +594,12 @@ fn describe_composite(tool: &CompositeTool, registry: &ToolRegistry) -> Result<S
     Ok(Value::Object(entry).to_string())
 }
 
-/// `registered`, а для незарегистрированных — флаги (`enable_with`) и что делать (`note`).
+/// `registered`, а для незарегистрированных — флаги (`enable_with`), недостающий уровень
+/// (`needs_access`) и что делать (`note`).
+///
+/// Флаг уровня доступа попадает в `enable_with` только у HTTP-сервера: там уровень задают
+/// флаги оператора. Локальному серверу права даёт профиль, флаги их только сужают, поэтому
+/// для него в `note` — подсказка про права профиля ([`access_hint`]).
 fn insert_availability(
     entry: &mut Map<String, Value>,
     item: Availability<'_>,
@@ -612,8 +619,12 @@ fn insert_availability(
     }
     let mut flags = Vec::new();
     let access_ok = registry.max_access().allows(item.access);
+    let local = registry.local_files();
     if !access_ok {
-        flags.push(access_flag(item.access).to_owned());
+        entry.insert("needs_access".into(), json!(access_name(item.access)));
+        if !local {
+            flags.push(access_flag(item.access).to_owned());
+        }
     }
     let alternative = if item.via_api_request {
         ", or call the same method and path with `api_request`"
@@ -642,15 +653,31 @@ fn insert_availability(
     } else if !registry.toolset_enabled(item.toolset) {
         flags.push(format!("--toolsets {}", item.toolset));
     }
-    entry.insert("enable_with".into(), json!(flags.join(" ")));
+    if !flags.is_empty() {
+        entry.insert("enable_with".into(), json!(flags.join(" ")));
+    }
     let note = if access_ok && item.via_api_request {
         "Its toolset is not enabled: call the same method and path with `api_request`, or ask \
          the user to add the toolset to --toolsets."
+            .to_owned()
     } else if access_ok {
-        "Its toolset is not enabled: ask the user to add the toolset to --toolsets."
+        "Its toolset is not enabled: ask the user to add the toolset to --toolsets.".to_owned()
+    } else if local {
+        format!(
+            "Needs `{}` access, which this server does not have: ask the user to {} if the \
+             change is intended{}.",
+            access_name(item.access),
+            access_hint(item.access, true),
+            if flags.is_empty() {
+                ""
+            } else {
+                ", and to add the toolset in `enable_with`"
+            }
+        )
     } else {
         "Needs a higher access level than this server allows: ask the user to restart the server \
          with the flag in `enable_with` if the change is intended."
+            .to_owned()
     };
     entry.insert("note".into(), json!(note));
 }
@@ -917,7 +944,14 @@ mod tests {
         assert_eq!(create["access"], "write");
         assert_eq!(create["toolset"], "releases");
         assert_eq!(create["registered"], false);
-        assert_eq!(create["enable_with"], "--allow-write");
+        // Локальный сервер: уровень — у профиля, флага уровня нет.
+        assert_eq!(create["needs_access"], "write");
+        assert!(create.get("enable_with").is_none(), "{create}");
+        let note = create["note"].as_str().unwrap();
+        assert!(
+            note.contains("`write` access") && note.contains("rustore-mcp ui"),
+            "{note}"
+        );
         assert!(
             create["reference"]
                 .as_str()
@@ -935,15 +969,26 @@ mod tests {
             .iter()
             .find(|r| r["tool_name"] == "delete_draft_version")
             .unwrap();
-        assert_eq!(delete["enable_with"], "--allow-write");
+        assert_eq!(delete["needs_access"], "write");
         let commit = entries
             .iter()
             .find(|r| r["tool_name"] == "submit_draft_for_moderation")
             .unwrap();
-        assert_eq!(commit["enable_with"], "--allow-destructive");
+        assert_eq!(commit["needs_access"], "destructive");
         let list = run(json!({"tool_name": "list_versions"}), &read).unwrap();
         assert_eq!(list["registered"], true);
         assert!(list.get("enable_with").is_none());
+        assert!(list.get("needs_access").is_none());
+
+        // HTTP-сервер: уровень задают флаги оператора.
+        let remote = ToolRegistry::new(&ServerOptions {
+            local_machine: false,
+            ..ServerOptions::default()
+        })
+        .unwrap();
+        let result = run(json!({"tool_name": "create_draft_version"}), &remote).unwrap();
+        assert_eq!(result["enable_with"], "--allow-write");
+        assert_eq!(result["needs_access"], "write");
 
         // Набор выключен: флаг набора и подсказка про `api_request`.
         let catalog = registry(AccessLevel::Read, Some(&["catalog"]));
@@ -961,11 +1006,13 @@ mod tests {
         assert_eq!(reads["enable_with"], "--toolsets reviews");
         assert!(reads["note"].as_str().unwrap().contains("api_request"));
 
-        // Выше уровня и вне набора — оба флага.
+        // Выше уровня и вне набора — уровень профиля и флаг набора.
         let result = run(json!({"tool_name": "delete_review_answer"}), &catalog).unwrap();
-        assert_eq!(
-            result["enable_with"],
-            "--allow-destructive --toolsets reviews"
+        assert_eq!(result["enable_with"], "--toolsets reviews");
+        assert_eq!(result["needs_access"], "destructive");
+        assert!(
+            result["note"].as_str().unwrap().contains("add the toolset"),
+            "{result}"
         );
     }
 
@@ -990,9 +1037,10 @@ mod tests {
                 .contains("`enable_toolset`")
         );
 
-        // Выше уровня доступа — только флаг сервера, без `--toolsets`.
+        // Выше уровня доступа — только уровень профиля, без `--toolsets`.
         let result = run(json!({"tool_name": "create_draft_version"}), &dynamic).unwrap();
-        assert_eq!(result["enable_with"], "--allow-write");
+        assert_eq!(result["needs_access"], "write");
+        assert!(result.get("enable_with").is_none(), "{result}");
     }
 
     #[test]
@@ -1074,7 +1122,7 @@ mod tests {
         assert_eq!(result["operation_id"], "create_draft_version");
         assert_eq!(result["method"], "POST");
         assert_eq!(result["registered"], false);
-        assert_eq!(result["enable_with"], "--allow-write");
+        assert_eq!(result["needs_access"], "write");
         assert_eq!(result["input_schema"]["type"], "object");
         assert!(result["input_schema"]["properties"]["body"].is_object());
 
@@ -1156,8 +1204,8 @@ mod tests {
         let first = &result["results"][0];
         assert_eq!(first["tool_name"], "fake_catalog_sync", "{result}");
         assert_eq!(first["registered"], false);
+        assert_eq!(first["needs_access"], "write");
         let enable = first["enable_with"].as_str().unwrap();
-        assert!(enable.contains("--allow-write"), "{enable}");
         assert!(enable.contains("--toolsets catalog"), "{enable}");
         assert!(!first["note"].as_str().unwrap().contains("api_request"));
 

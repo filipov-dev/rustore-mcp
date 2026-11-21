@@ -8,7 +8,7 @@
 //! обязательные аргументы отклоняются до рендера). Подсказки только описывают шаги для агента
 //! и ссылаются на инструменты по имени; запросов они не делают. Текст зависит от окружения
 //! сервера ([`PromptEnv`]): в HTTP-режиме нет инструментов с локальными файлами, без
-//! `--allow-destructive` нет публичных ответов на отзывы.
+//! уровня удаления нет публичных ответов на отзывы.
 //!
 //! Тексты — для агента, на английском. Имена инструментов в тексте пишутся в обратных
 //! кавычках, аргументы — без них: тесты проверяют, что каждое такое имя существует
@@ -24,6 +24,8 @@ use rmcp::model::{
     Role,
 };
 use rustore_api::spec::AccessLevel;
+
+use crate::registry::access_hint;
 use serde_json::Value;
 
 /// Аргумент подсказки.
@@ -222,8 +224,9 @@ const PACKAGE_NAME: PromptArg = PromptArg {
 const ACCESS_NOTE: &str = "If a tool below is not available, the server may run with dynamic \
 toolsets: call `list_toolsets` and turn on the needed toolsets with `enable_toolset`, or the \
 toolset is not in --toolsets: ask the user to add it. A tool above the server's access level is \
-not registered: tell the user which flag enables it (--allow-write or --allow-destructive) \
-instead of working around it with `api_request`.";
+not registered: tell the user which access it needs (write or destructive: the access of the \
+server's profile, set with `rustore-mcp ui`; for a server in HTTP mode, its flags) instead of \
+working around it with `api_request`.";
 
 const DESTRUCTIVE_RULE: &str = "Destructive steps reach real RuStore users or money. Before \
 each of them tell the user exactly what will happen, get an explicit yes for that step, and \
@@ -328,7 +331,7 @@ Report every step as done / missing / needs the user.
 with `release_submit` (destructive) — with publishType INSTANTLY an approved version reaches \
 users without another call; publishing with `release_rollout` (destructive) action publish; \
 raising the rollout percent with `release_rollout` action set_percent (RuStore cannot lower \
-it). They need a server started with --allow-destructive.
+it). They need a server with destructive access.
 
 1. State: call `release_summary` ({package}). Note what is live (and the rollout percent), \
 what is in moderation, the draft if there is one, and the moderation comment of the last \
@@ -365,7 +368,7 @@ const TRIAGE_REVIEWS: PromptDef = PromptDef {
     title: "Triage reviews and draft replies",
     description: "Read recent RuStore reviews of an app, group them by theme, rating and app \
                   version, and draft replies. A reply is posted only after the user approves \
-                  its exact text, and only on a server with --allow-destructive.",
+                  its exact text, and only on a server with destructive access.",
     access: AccessLevel::Read,
     arguments: &[
         PACKAGE_NAME,
@@ -388,11 +391,14 @@ and the approved text in body.message; `update_review_answer` (destructive) chan
 existing answer. Replies are public and go through RuStore moderation: check them later with \
 `get_review_answer_status`. Post each reply only after the user's explicit yes to its final \
 wording."
+            .to_owned()
     } else {
-        "6. Posting: this server cannot post replies — `reply_to_review` (destructive) needs \
-the server started with --allow-destructive. Give the user the approved texts to post in the \
-RuStore console, or ask them to restart the server with that flag; never post without the \
-user's explicit yes to the final wording."
+        format!(
+            "6. Posting: this server cannot post replies — `reply_to_review` (destructive) needs \
+destructive access. Give the user the approved texts to post in the RuStore console, or ask \
+them to {}; never post without the user's explicit yes to the final wording.",
+            access_hint(AccessLevel::Destructive, env.local_machine)
+        )
     };
     let export = if env.local_machine {
         " For a larger period save the reviews to a new local file with `reviews_export` and \
@@ -496,7 +502,7 @@ file has one row per payment (invoiceId, dates, status, product, amounts, curren
 {DESTRUCTIVE_RULE} This task only reads. Refunds (`refund_payment` (destructive)), \
 cancellations and confirmations of purchases change money and are not part of the \
 reconciliation: if the user asks for one, name the invoice and the amount, get an explicit yes \
-and use a server started with --allow-destructive. Never run them in the sandbox tools \
+and use a server with destructive access. Never run them in the sandbox tools \
 (`_sandbox`) by mistake or the real ones for test purchases.
 
 1. App: payments use the numeric appId. Find it with `search_apps` (it returns appId) or pass \
@@ -548,8 +554,8 @@ fn render_apps_health_check(args: &BTreeMap<String, String>, _env: &PromptEnv) -
 {DESTRUCTIVE_RULE} This check only reads. If it finds something to fix, suggest the step: \
 sending a draft to moderation (`release_submit` (destructive)), publishing or widening a \
 rollout (`release_rollout` (destructive)) or replying to reviews (`reply_to_review` \
-(destructive)) happen only after the user's explicit yes and on a server started with \
---allow-destructive.
+(destructive)) happen only after the user's explicit yes and on a server with destructive \
+access.
 
 1. Apps: call `search_apps` without query to list every app the key can access (packageName, \
 appName, appId, appStatus). The key may be limited to some apps in the RuStore console: say \
@@ -669,7 +675,9 @@ mod tests {
     }
 
     /// Аргументы составных инструментов, которые подсказки упоминают в обратных кавычках.
-    const ARGUMENTS: [&str; 1] = ["unanswered_only"];
+    // Кроме аргументов подсказок, в обратных кавычках встречаются уровни доступа из
+    // подсказок о правах (`access_hint`).
+    const ARGUMENTS: [&str; 4] = ["unanswered_only", "read", "write", "destructive"];
 
     #[test]
     fn prompts_have_unique_names_and_arguments() {

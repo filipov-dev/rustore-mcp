@@ -764,8 +764,9 @@ pub fn server_instructions(
             "- Local files: file arguments (`file` of `upload_apk`, `upload_aab`, `upload_icon` \
              and `upload_screenshot*`, `save_to` of downloads such as `export_reviews_csv`) take \
              a path (absolute, or relative to the server's working directory) inside the allowed \
-             directories: {roots}. Other paths are rejected; the user can allow more with \
-             --allow-path. Downloads never overwrite existing files. Large content (review CSV \
+             directories: {roots}. Other paths are rejected; the user can allow more \
+             directories for the server's profile with `rustore-mcp ui`. Downloads never \
+             overwrite existing files. Large content (review CSV \
              exports) is never returned in responses: it is saved to `save_to`.\n",
             roots = files.describe_roots(),
         )
@@ -791,7 +792,7 @@ pub fn server_instructions(
     } else {
         format!(
             "Enabled toolsets: {}; tools of other toolsets (and above the access level) are not \
-             registered, and calling them explains which flag enables them.",
+             registered, and calling them explains what enables them.",
             enabled.join(", ")
         )
     };
@@ -912,7 +913,7 @@ pub fn server_instructions(
          {push}\
          - Finding operations: `api_search` searches all RuStore API operations by words in \
          English or Russian (names, summaries, paths), including tools not enabled here, and \
-         tells which flag enables them. Use it when no listed tool fits. `api_request` calls \
+         tells what enables them. Use it when no listed tool fits. `api_request` calls \
          any RuStore API path (`/public/...`, like \
          `/public/v1/application/com.example.app/version`) within the server's access level; \
          toolsets do not limit it. Prefer the dedicated tool when it is registered: it \
@@ -977,12 +978,13 @@ fn access_text(level: AccessLevel, local: bool) -> &'static str {
         (AccessLevel::Read, true) => {
             "This server is read-only: only tools that read data are available. Tools that \
              change a draft version (creating and editing drafts, uploading builds, icons and \
-             screenshots) are enabled when the user starts the server with --allow-write, and \
-             tools that reach users or affect money (sending a draft to moderation, publishing, \
-             rollout percentage, archiving, public replies to reviews, refunds, cancellations \
-             and confirmations of purchases and subscriptions, granting and revoking access, \
-             sending push notifications) with --allow-destructive. If a task needs them, ask the user instead of looking \
-             for workarounds."
+             screenshots) are enabled when the user allows `write` access for the server's \
+             profile, and tools that reach users or affect money (sending a draft to moderation, \
+             publishing, rollout percentage, archiving, public replies to reviews, refunds, \
+             cancellations and confirmations of purchases and subscriptions, granting and \
+             revoking access, sending push notifications) with `destructive` access (the user \
+             does it with `rustore-mcp ui`, then restarts the client). If a task needs them, ask \
+             the user instead of looking for workarounds."
         }
         (AccessLevel::Read, false) => {
             "This server is read-only: only tools that read data are available. Tools that \
@@ -994,9 +996,9 @@ fn access_text(level: AccessLevel, local: bool) -> &'static str {
             "This server can read data and change draft versions (texts, builds, icons, \
              screenshots), but not reach users or affect money: sending a draft to moderation, \
              publishing, rollout percentage, archiving, public replies to reviews, refunds, \
-             purchase and subscription actions and access changes need the user to start the \
-             server with --allow-destructive. Changes of a draft stay invisible to users until \
-             it passes moderation and is published."
+             purchase and subscription actions and access changes need `destructive` access \
+             for the server's profile (`rustore-mcp ui`). Changes of a draft stay invisible to \
+             users until it passes moderation and is published."
         }
         (AccessLevel::Write, false) => {
             "This server can read data and change draft versions (texts, builds, icons, \
@@ -1028,7 +1030,9 @@ mod tests {
         let files = FilePolicy::new(&[]).unwrap();
         let read = instructions(&ServerOptions::default(), &files);
         assert!(read.contains("(read-only access)"), "{read}");
-        assert!(read.contains("--allow-write") && read.contains("--allow-destructive"));
+        assert!(read.contains("`write` access") && read.contains("`destructive` access"));
+        assert!(read.contains("rustore-mcp ui"), "{read}");
+        assert!(!read.contains("--allow"), "{read}");
         assert!(read.contains("allowed directories: none"), "{read}");
         assert!(
             read.contains("Enabled toolsets: apps, releases, reviews;"),
@@ -1104,7 +1108,7 @@ mod tests {
         assert!(write.contains("Enabled toolsets: catalog;"), "{write}");
         assert!(write.contains("auth login --profile codex"), "{write}");
         assert!(write.contains("the profile `codex`"), "{write}");
-        assert!(write.contains("--allow-destructive"), "{write}");
+        assert!(write.contains("`destructive` access"), "{write}");
 
         let all = instructions(
             &ServerOptions {
@@ -1125,7 +1129,12 @@ mod tests {
             ..ServerOptions::default()
         };
         let text = instructions(&remote, &FilePolicy::disabled());
-        for absent in ["auth login", "--allow-path", "allowed directories"] {
+        for absent in [
+            "auth login",
+            "--allow-path",
+            "allowed directories",
+            "rustore-mcp ui",
+        ] {
             assert!(!text.contains(absent), "{absent}: {text}");
         }
         assert!(text.contains("HTTP mode"), "{text}");

@@ -116,7 +116,7 @@ async fn push_tools_need_the_toolset_and_the_access_level() {
     assert!(!tools.contains(&SEND.to_owned()));
     assert!(!tools.contains(&PUBLISH.to_owned()));
     let reason = write.registry().unavailable_reason(SEND).unwrap();
-    assert!(reason.contains("allow-destructive"), "{reason}");
+    assert!(reason.contains("`destructive` access"), "{reason}");
 
     let destructive = server(&public, None, AccessLevel::Destructive, push_toolset());
     let tools = destructive.registry().tools();
