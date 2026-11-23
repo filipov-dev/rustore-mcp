@@ -27,6 +27,10 @@ v0.3.1 rustore-mcp-v0.3.1-macos-universal.tar.gz 796e565ac20204ad4eb2a5f3dac08b2
 v0.3.1 rustore-mcp-v0.3.1-linux-x86_64.tar.gz 12e98114275e437856828e8ef6bde88e7b7042653a41eca46f763fa8f50ba1df https://github.com/filipov-dev/rustore-mcp/releases/download/v0.3.1/rustore-mcp-v0.3.1-linux-x86_64.tar.gz
 v0.3.1 rustore-mcp-v0.3.1-linux-aarch64.tar.gz 61cded58d662f46631efbeff0869e07889cdd47c9b819de2ab640ecef92d2de1 https://github.com/filipov-dev/rustore-mcp/releases/download/v0.3.1/rustore-mcp-v0.3.1-linux-aarch64.tar.gz
 v0.3.1 SHA256SUMS - https://github.com/filipov-dev/rustore-mcp/releases/download/v0.3.1/SHA256SUMS
+v0.2.0 rustore-mcp-v0.2.0-macos-universal.tar.gz 22fbab51615709a06915acaf5b4314e515843f56ccead8f478d4cde86a4e5b3f https://github.com/filipov-dev/rustore-mcp/releases/download/v0.2.0/rustore-mcp-v0.2.0-macos-universal.tar.gz
+v0.2.0 rustore-mcp-v0.2.0-linux-x86_64.tar.gz a1c622a7fafa6c73d2bc9860d4452c80424ed60377c7ecd278072804246158a2 https://github.com/filipov-dev/rustore-mcp/releases/download/v0.2.0/rustore-mcp-v0.2.0-linux-x86_64.tar.gz
+v0.2.0 rustore-mcp-v0.2.0-linux-aarch64.tar.gz a8b52c3ed1a7bbda725c26d26f4e9c71555e4266b54df9376c067fafe1a3a9a7 https://github.com/filipov-dev/rustore-mcp/releases/download/v0.2.0/rustore-mcp-v0.2.0-linux-aarch64.tar.gz
+v0.2.0 SHA256SUMS - https://github.com/filipov-dev/rustore-mcp/releases/download/v0.2.0/SHA256SUMS
 v0.1.0 rustore-mcp-v0.1.0-macos-universal.tar.gz 05c67ebeab3a4bfa9a23d5b07404292bcf814f7b1466bdb811ba8684d08b4aac https://github.com/filipov-dev/rustore-mcp/releases/download/v0.1.0/rustore-mcp-v0.1.0-macos-universal.tar.gz
 v0.1.0 rustore-mcp-v0.1.0-linux-x86_64.tar.gz 0959372431bbd6bd7da385aa47f0f66005f8f10d6b60731c09c4e6d2f7c4b90f https://github.com/filipov-dev/rustore-mcp/releases/download/v0.1.0/rustore-mcp-v0.1.0-linux-x86_64.tar.gz
 v0.1.0 rustore-mcp-v0.1.0-linux-aarch64.tar.gz 6913c46a2ea1ddc73c9ddd24b58fd9ec30d82d1e8fe758e59b6f85725832aaf3 https://github.com/filipov-dev/rustore-mcp/releases/download/v0.1.0/rustore-mcp-v0.1.0-linux-aarch64.tar.gz
