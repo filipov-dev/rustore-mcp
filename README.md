@@ -18,7 +18,7 @@ MCP-сервер и CLI для [RuStore API](https://www.rustore.ru/help/work-wi
 ### Установочный скрипт (Linux и macOS)
 
 ```bash
-curl -fsSL https://codeload.sourcecraft.tech/filipov-dev/rustore-mcp/tarball/refs/heads/install | tar -xzO | sh
+curl -fsSL https://codeload.github.com/filipov-dev/rustore-mcp/tar.gz/refs/heads/install | tar -xzO | sh
 ```
 
 Скрипт ставит последнюю версию в `~/.local/bin` без `sudo` и сверяет архив с `SHA256SUMS` релиза; повторный запуск обновляет бинарник.
@@ -32,7 +32,7 @@ brew install filipov-dev/tap/rustore-mcp
 
 ### Windows и готовые архивы
 
-Архивы — на [странице релизов](https://sourcecraft.dev/filipov-dev/rustore-mcp/releases): macOS (универсальный, подписан и нотаризован), Linux x86_64 и aarch64 (статические, без зависимостей), Windows x86_64 (`rustore-mcp-<тег>-windows-x86_64.zip`, без подписи кода: SmartScreen может предупредить при первом запуске). Параметры скрипта, проверка контрольных сумм, установка в Windows, сборка из исходников, обновление и удаление — в [docs/install.md](docs/install.md).
+Архивы — на [странице релизов на GitHub](https://github.com/filipov-dev/rustore-mcp/releases) (код — в [SourceCraft](https://sourcecraft.dev/filipov-dev/rustore-mcp) и в его копии на GitHub): macOS (универсальный, подписан и нотаризован), Linux x86_64 и aarch64 (статические, без зависимостей), Windows x86_64 (`rustore-mcp-<тег>-windows-x86_64.zip`, без подписи кода: SmartScreen может предупредить при первом запуске). Параметры скрипта, проверка контрольных сумм, установка в Windows, сборка из исходников, обновление и удаление — в [docs/install.md](docs/install.md).
 
 ## Быстрый старт
 
